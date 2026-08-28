@@ -1,0 +1,18 @@
+ai:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  max_tokens: 8000
+  repo_max_tokens: 80000
+
+confluence:
+  base_url: https://your-org.atlassian.net
+  space_key: SUPPORT
+  username: your-email@org.com
+  api_token: ${CONFLUENCE_API_TOKEN}
+  parent_page_id: ""
+
+anthropic:
+  api_key: ${ANTHROPIC_API_KEY}
+
+openai:
+  api_key: ${OPENAI_API_KEY}
