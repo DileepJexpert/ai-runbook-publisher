@@ -4,3 +4,11 @@ __pycache__/
 venv/
 .env
 runbook-*.md
+runs/*
+!runs/.gitkeep
+output/*
+!output/.gitkeep
+.runbook-index/
+.pytest_cache/
+.coverage
+htmlcov/
