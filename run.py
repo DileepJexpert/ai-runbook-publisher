@@ -7,6 +7,7 @@ import logging
 import os
 import re
 from pathlib import Path
+import sys
 
 import click
 import yaml
@@ -15,7 +16,6 @@ from collector import collect_service_facts, save_service_facts
 from publisher.confluence import ConfluenceConfig, ConfluencePublisher
 from publisher.engines import create_generation_engine
 from publisher.html_renderer import generate_runbook_html
-from publisher.publisher import publish
 from publisher.repository import inspect_repository
 from publisher.repository_tools import RepositoryTools
 from publisher.runbook_generator import RunbookGenerator
@@ -78,6 +78,12 @@ def load_config(path: str) -> dict:
 @click.option("--search-index", "search_query", default=None, help="Search the code index with the given query string (builds index if needed).")
 @click.option("--ask-repo", "ask_question", default=None, help="Ask a question about the repository using the tool-calling LLM agent.")
 @click.option(
+    "--agent-debug",
+    is_flag=True,
+    default=False,
+    help="Show agent tool calls during repository investigation.",
+)
+@click.option(
     "--execution-mode",
     type=click.Choice(["local", "pipeline"], case_sensitive=False),
     default="local",
@@ -91,270 +97,33 @@ def load_config(path: str) -> dict:
 @click.option("--force", is_flag=True, default=False, help="Force a new execution attempt even if a complete generation exists.")
 def main(
     repo_path: Path,
-    service: str | None,
-    environment: str,
-    app_version: str,
-    commit_sha: str | None,
-    branch: str | None,
-    config_path: str,
-    coder_cmd: str | None,
-    mode: str | None,
-    engine_name: str | None,
-    output_suffix: str | None,
-    dry_run: bool,
-    inspect_repo: bool,
-    collect_facts: bool,
-    build_index: bool,
-    search_query: str | None,
-    ask_question: str | None,
-    generate_runbook: bool,
-    agent_debug: bool,
-    force: bool,
+    service: str | None = None,
+    environment: str = "production",
+    app_version: str = "latest",
+    commit_sha: str | None = None,
+    branch: str | None = None,
+    config_path: str = "config/config.yml",
+    coder_cmd: str | None = None,
+    mode: str | None = None,
+    engine_name: str | None = None,
+    output_suffix: str | None = None,
+    dry_run: bool = False,
+    inspect_repo: bool = False,
+    collect_facts: bool = False,
+    build_index: bool = False,
+    search_query: str | None = None,
+    ask_question: str | None = None,
+    agent_debug: bool = False,
     execution_mode: str = "local",
     deployed_commit: str | None = None,
+    force: bool = False,
 ) -> None:
     """Generate a Production Support Runbook for a Java Spring Boot microservice using IDFC Coder or deterministic fact collection."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-    if generate_runbook:
-        try:
-            loaded_cfg = load_config(config_path)
-            llm_cfg = loaded_cfg.get("llm", {})
-            gen_cfg = loaded_cfg.get("generation", {})
-            idfc_cfg = loaded_cfg.get("idfc_coder", {})
-
-            active_engine_name = engine_name or gen_cfg.get("default_engine", "api")
-            active_coder_cmd = coder_cmd or idfc_cfg.get("command")
-            active_coder_mode = mode or idfc_cfg.get("mode")
-
-            if execution_mode.lower() == "pipeline":
-                if active_engine_name in ("idfc-coder", "idfc_coder", "local-idfc"):
-                    click.echo("Error: IDFC Coder is strictly prohibited in PIPELINE execution mode. Use --engine api.", err=True)
-                    sys.exit(1)
-
-            engine_instance = create_generation_engine(
-                name=active_engine_name,
-                coder_cmd=active_coder_cmd,
-                coder_mode=active_coder_mode,
-                llm_config=llm_cfg,
-            )
-
-            generator = RunbookGenerator(engine=engine_instance)
-            result = generator.generate(
-                repo_path=str(repo_path),
-                environment=environment,
-                version=app_version,
-                service_name_override=service,
-                commit_sha_override=commit_sha,
-                branch_override=branch,
-                output_suffix=output_suffix,
-                agent_debug=agent_debug,
-                force=force,
-            )
-
-            # Startup Identity Display
-            click.echo(f"Service: {result.service_name}")
-            click.echo(f"Repository: {repo_path}")
-            click.echo(f"Branch: {branch or 'main'}")
-            click.echo(f"Commit: {result.commit_sha}")
-            click.echo(f"Working Tree Clean: {result.validation_status != 'FAILED'}")
-            click.echo(f"Source Fingerprint: {result.source_fingerprint}")
-            click.echo(f"Prompt Fingerprint: {result.prompt_fingerprint}")
-            click.echo(f"Generation Key: {result.generation_key}")
-            click.echo("")
-
-            if result.cache_hit:
-                click.echo("CACHE HIT")
-                click.echo("Existing COMPLETE generation found.")
-                click.echo(f"Skipping {result.engine.upper() if result.engine != 'cached' else 'generation engine'}.")
-                click.echo("")
-                click.echo("Existing successful generation found.")
-                click.echo("No relevant source or generation-rule changes detected.")
-                click.echo("Reusing existing runbook.")
-                click.echo("")
-                click.echo(f"Service: {result.service_name}")
-                click.echo(f"Generation Key: {result.generation_key}")
-                click.echo(f"Commit: {result.commit_sha}")
-                click.echo(f"Runbook: {result.runbook_path}")
-                if result.confluence_body_path:
-                    click.echo(f"Confluence HTML: {result.confluence_body_path}")
-                return
-
-            if result.validation_status == "DISCOVERY_PREPARED":
-                click.echo("Production Support Runbook")
-                click.echo("--------------------------")
-                click.echo("")
-                click.echo(f"Service: {result.service_name}")
-                click.echo(f"Engine: {result.engine}")
-                click.echo("")
-                click.echo("Discovery:")
-                click.echo("PREPARED")
-                click.echo("")
-                click.echo("Task:")
-                click.echo(f"output/{result.service_name}/{result.generation_key}/DISCOVERY_TASK.md")
-                click.echo("")
-                click.echo("Expected artifact:")
-                click.echo(f"output/{result.service_name}/{result.generation_key}/REPOSITORY_FINDINGS.md")
-                click.echo("")
-                click.echo("Runbook:")
-                click.echo("WAITING_FOR_DISCOVERY")
-                click.echo("")
-                click.echo("Confluence:")
-                click.echo("NOT PUBLISHED (dry-run)")
-                return
-
-            if result.validation_status == "RUNBOOK_PREPARED":
-                click.echo("Production Support Runbook")
-                click.echo("--------------------------")
-                click.echo("")
-                click.echo(f"Service: {result.service_name}")
-                click.echo(f"Engine: {result.engine}")
-                click.echo("")
-                click.echo("Discovery:")
-                click.echo("COMPLETE")
-                click.echo("")
-                click.echo("Runbook:")
-                click.echo("PREPARED")
-                click.echo("")
-                click.echo("Task:")
-                click.echo(f"output/{result.service_name}/{result.generation_key}/RUNBOOK_TASK.md")
-                click.echo("")
-                click.echo("Expected artifact:")
-                click.echo(f"output/{result.service_name}/{result.generation_key}/RUNBOOK.md")
-                click.echo("")
-                click.echo("Confluence:")
-                click.echo("NOT PUBLISHED (dry-run)")
-                return
-
-            # Phase 5: Deterministic HTML Generation and Confluence Publication after Validation
-            html_path = result.runbook_html_path
-            html_error = None
-            confluence_config = ConfluenceConfig.from_dict(loaded_cfg.get("confluence", {}))
-            confluence_res = None
-
-            if result.validation_status == "PASSED":
-                repo_info = inspect_repository(str(repo_path))
-                output_dir = Path("output") / result.service_name / result.generation_key
-
-                # 1. Deterministic HTML generation
-                try:
-                    html_target = generate_runbook_html(
-                        runbook_path=result.runbook_path,
-                        output_dir=output_dir,
-                        repo_name=repo_info.repo_name,
-                        service_name=result.service_name,
-                    )
-                    html_path = str(html_target)
-                except Exception as exc:
-                    html_error = str(exc)
-                    logging.error("Failed to generate HTML runbook: %s", exc)
-
-                # 2. Confluence publishing (if enabled)
-                confluence_pub = ConfluencePublisher(config=confluence_config)
-                confluence_res = confluence_pub.publish_runbook(
-                    runbook_path=result.runbook_path,
-                    repo_info=repo_info,
-                    validation_status=result.validation_status,
-                    dry_run=dry_run,
-                )
-
-                # 3. Update generation summary with HTML and Confluence info
-                summary_file = output_dir / "generation-summary.json"
-                if summary_file.exists():
-                    try:
-                        sum_data = json.loads(summary_file.read_text(encoding="utf-8"))
-                        if html_path:
-                            sum_data["html"] = {"generated": True, "path": str(html_path)}
-                        elif html_error:
-                            sum_data["html"] = {"generated": False, "error": html_error}
-                        else:
-                            sum_data["html"] = {"generated": False, "reason": "Validation not passed"}
-
-                        sum_data["confluence"] = confluence_res.to_summary_dict(enabled=confluence_config.enabled)
-                        summary_file.write_text(json.dumps(sum_data, indent=2), encoding="utf-8")
-                    except Exception as exc:
-                        logging.debug("Could not update generation summary: %s", exc)
-
-            click.echo("Production Support Runbook Generation")
-            click.echo("-------------------------------------")
-            click.echo("")
-            click.echo(f"Service: {result.service_name}")
-            click.echo(f"Commit: {result.commit_sha}")
-            click.echo(f"Environment: {result.environment}")
-            click.echo("")
-            click.echo("Deterministic facts loaded: YES")
-            click.echo(f"Generation engine: {result.engine}")
-            click.echo(f"Tool calls: {result.tool_calls}")
-            click.echo("")
-            click.echo("Discovery:")
-            click.echo(result.discovery_status)
-            if result.findings_path:
-                click.echo(f"Findings: {result.findings_path}")
-            click.echo("")
-            click.echo("Runbook:")
-            click.echo(result.runbook_path or "(Not yet generated)")
-            click.echo("")
-            click.echo(f"Validation: {result.validation_status}")
-            if result.validation_errors:
-                click.echo("Validation errors:")
-                for err in result.validation_errors:
-                    click.echo(f"  - {err}")
-            click.echo("")
-            click.echo("HTML:")
-            if result.validation_status == "PASSED":
-                if html_path:
-                    click.echo("GENERATED")
-                    click.echo(str(html_path))
-                else:
-                    click.echo("FAILED")
-                    click.echo(html_error or "Unknown error during HTML rendering")
-            else:
-                click.echo("NOT GENERATED (validation failed)")
-            click.echo("")
-            click.echo("Evidence:")
-            click.echo(result.evidence_path or "None")
-            click.echo("")
-            click.echo("Confluence:")
-            if confluence_res:
-                if confluence_res.action == "DRY_RUN":
-                    click.echo("DRY RUN")
-                    click.echo(f"Action: {confluence_res.planned_action}")
-                    click.echo(f"Parent Page ID: {confluence_res.parent_page_id}")
-                    click.echo(f"Page title: {confluence_res.page_title}")
-                    if confluence_res.page_id:
-                        click.echo(f"Existing Page ID: {confluence_res.page_id}")
-                elif confluence_res.action in ("CREATED", "UPDATED"):
-                    click.echo(f"PUBLISHED ({confluence_res.action})")
-                    click.echo(f"Page ID: {confluence_res.page_id}")
-                    click.echo(f"Page title: {confluence_res.page_title}")
-                    click.echo(f"Parent Page ID: {confluence_res.parent_page_id}")
-                    if confluence_res.version:
-                        click.echo(f"Version: {confluence_res.version}")
-                    if confluence_res.page_url:
-                        click.echo(f"URL: {confluence_res.page_url}")
-                elif confluence_res.action == "FAILED":
-                    click.echo("FAILED")
-                    click.echo(f"Reason: {confluence_res.error}")
-                elif confluence_res.action == "SKIPPED":
-                    if not confluence_config.enabled:
-                        click.echo("NOT PUBLISHED (disabled)")
-                    else:
-                        click.echo(f"SKIPPED ({confluence_res.error or 'not published'})")
-                else:
-                    click.echo("NOT PUBLISHED (dry-run)")
-            else:
-                if not confluence_config.enabled:
-                    click.echo("NOT PUBLISHED (disabled)")
-                else:
-                    click.echo("NOT PUBLISHED (dry-run)")
-            return
-        except Exception as exc:
-            logging.error("Runbook generation failed: %s", exc)
-            raise click.ClickException(str(exc)) from exc
-
+    # 1. Ask question about repository mode
     if ask_question:
         try:
-            # Load configuration
             loaded_cfg = load_config(config_path)
             llm_cfg = loaded_cfg.get("llm", {})
 
@@ -369,7 +138,6 @@ def main(
                     "Note: Ensure the configured endpoint is approved by your organization for repository source code."
                 )
 
-            # Optional deterministic service facts baseline
             facts = None
             try:
                 facts = collect_service_facts(
@@ -411,6 +179,7 @@ def main(
             logging.error("Repository agent execution failed: %s", exc)
             raise click.ClickException(str(exc)) from exc
 
+    # 2. Deterministic service fact collection mode
     if collect_facts:
         try:
             facts = collect_service_facts(
@@ -443,13 +212,14 @@ def main(
             logging.error("Deterministic fact collection failed: %s", exc)
             raise click.ClickException(str(exc)) from exc
 
+    # 3. Build index or search index mode
     if build_index or search_query:
         try:
             repo_info = inspect_repository(str(repo_path))
             svc_name = service or repo_info.service_name
             sha = commit_sha or repo_info.commit_sha
 
-            def _get_or_build_index() -> "CodeIndexStore":
+            def _get_or_build_index() -> CodeIndexStore:
                 existing = load_code_index(svc_name, sha)
                 if existing is not None:
                     click.echo(f"Loaded existing index for {svc_name}@{sha[:12]}")
@@ -483,8 +253,8 @@ def main(
 
             if search_query:
                 store = _get_or_build_index()
-                engine = CodeSearchEngine(store)
-                hits = engine.search(search_query, top_k=10)
+                search_engine = CodeSearchEngine(store)
+                hits = search_engine.search(search_query, top_k=10)
 
                 click.echo(f"Search: {search_query}")
                 click.echo("")
@@ -506,6 +276,7 @@ def main(
             logging.error("Index operation failed: %s", exc)
             raise click.ClickException(str(exc)) from exc
 
+    # 4. Safe read-only repository inspection mode
     if inspect_repo:
         try:
             info = inspect_repository(str(repo_path))
@@ -539,58 +310,240 @@ def main(
             logging.error("Repository inspection failed: %s", exc)
             raise click.ClickException(str(exc)) from exc
 
-    config = load_config(config_path)
-
+    # 5. Default Action: Production Support Runbook Generation & Publishing
     try:
-        result = publish(
-            repo_path=str(repo_path),
-            service=service,
-            environment=environment,
-            version=app_version,
-            commit_sha=commit_sha,
-            branch=branch,
-            config=config,
-            dry_run=dry_run,
-            coder_cmd=coder_cmd,
-            mode=mode,
+        loaded_cfg = load_config(config_path)
+        llm_cfg = loaded_cfg.get("llm", {})
+        gen_cfg = loaded_cfg.get("generation", {})
+        idfc_cfg = loaded_cfg.get("idfc_coder", {})
+
+        active_engine_name = engine_name or gen_cfg.get("default_engine", "api")
+        active_coder_cmd = coder_cmd or idfc_cfg.get("command")
+        active_coder_mode = mode or idfc_cfg.get("mode")
+
+        if execution_mode.lower() == "pipeline":
+            if active_engine_name in ("idfc-coder", "idfc_coder", "local-idfc"):
+                click.echo("Error: IDFC Coder is strictly prohibited in PIPELINE execution mode. Use --engine api.", err=True)
+                sys.exit(1)
+
+        engine_instance = create_generation_engine(
+            name=active_engine_name,
+            coder_cmd=active_coder_cmd,
+            coder_mode=active_coder_mode,
+            llm_config=llm_cfg,
         )
 
-        if result.success:
-            if dry_run:
-                click.echo("\n=======================================================")
-                click.echo(" [SUCCESS] Runbook generated and validated successfully")
-                click.echo("=======================================================")
-                click.echo(f"Run folder:   {result.run_dir}")
-                click.echo(f"Runbook path: {result.runbook_path}")
-                click.echo("Validation:   PASS")
-            else:
-                click.echo("\n=======================================================")
-                click.echo(f" [SUCCESS] Runbook published to Confluence ({result.action})")
-                click.echo("=======================================================")
-                click.echo(f"Confluence URL: {result.page_url}")
-                click.echo(f"Page ID:        {result.page_id}")
-                click.echo(f"Run folder:     {result.run_dir}")
-        else:
-            click.echo("\n=======================================================", err=True)
-            click.echo(f" [FAILED] {result.error}", err=True)
-            click.echo("=======================================================", err=True)
-            if result.run_dir:
-                click.echo(f"Run folder: {result.run_dir}", err=True)
-                agent_log = result.run_dir / "agent.log"
-                run_log = result.run_dir / "run.log"
-                val_rep = result.run_dir / "validation-report.txt"
-                if agent_log.exists():
-                    click.echo(f"Agent log:  {agent_log}", err=True)
-                if run_log.exists():
-                    click.echo(f"Run log:    {run_log}", err=True)
-                if val_rep.exists():
-                    click.echo(f"Validation: {val_rep}", err=True)
-            raise click.ClickException(result.error or "Runbook generation failed.")
+        generator = RunbookGenerator(engine=engine_instance)
+        result = generator.generate(
+            repo_path=str(repo_path),
+            environment=environment,
+            version=app_version,
+            service_name_override=service,
+            commit_sha_override=commit_sha,
+            branch_override=branch,
+            output_suffix=output_suffix,
+            agent_debug=agent_debug,
+            force=force,
+        )
 
-    except click.ClickException:
-        raise
+        # Startup Identity Display
+        click.echo(f"Service: {result.service_name}")
+        click.echo(f"Repository: {repo_path}")
+        click.echo(f"Branch: {branch or 'main'}")
+        click.echo(f"Commit: {result.commit_sha}")
+        click.echo(f"Working Tree Clean: {result.validation_status != 'FAILED'}")
+        click.echo(f"Source Fingerprint: {result.source_fingerprint}")
+        click.echo(f"Prompt Fingerprint: {result.prompt_fingerprint}")
+        click.echo(f"Generation Key: {result.generation_key}")
+        click.echo("")
+
+        if result.cache_hit:
+            click.echo("CACHE HIT")
+            click.echo("Existing COMPLETE generation found.")
+            click.echo(f"Skipping {result.engine.upper() if result.engine != 'cached' else 'generation engine'}.")
+            click.echo("")
+            click.echo("Existing successful generation found.")
+            click.echo("No relevant source or generation-rule changes detected.")
+            click.echo("Reusing existing runbook.")
+            click.echo("")
+            click.echo(f"Service: {result.service_name}")
+            click.echo(f"Generation Key: {result.generation_key}")
+            click.echo(f"Commit: {result.commit_sha}")
+            click.echo(f"Runbook: {result.runbook_path}")
+            if result.confluence_body_path:
+                click.echo(f"Confluence HTML: {result.confluence_body_path}")
+            return
+
+        if result.validation_status == "DISCOVERY_PREPARED":
+            click.echo("Production Support Runbook")
+            click.echo("--------------------------")
+            click.echo("")
+            click.echo(f"Service: {result.service_name}")
+            click.echo(f"Engine: {result.engine}")
+            click.echo("")
+            click.echo("Discovery:")
+            click.echo("PREPARED")
+            click.echo("")
+            click.echo("Task:")
+            click.echo(f"output/{result.service_name}/{result.generation_key}/DISCOVERY_TASK.md")
+            click.echo("")
+            click.echo("Expected artifact:")
+            click.echo(f"output/{result.service_name}/{result.generation_key}/REPOSITORY_FINDINGS.md")
+            click.echo("")
+            click.echo("Runbook:")
+            click.echo("WAITING_FOR_DISCOVERY")
+            click.echo("")
+            click.echo("Confluence:")
+            click.echo("NOT PUBLISHED (dry-run)")
+            return
+
+        if result.validation_status == "RUNBOOK_PREPARED":
+            click.echo("Production Support Runbook")
+            click.echo("--------------------------")
+            click.echo("")
+            click.echo(f"Service: {result.service_name}")
+            click.echo(f"Engine: {result.engine}")
+            click.echo("")
+            click.echo("Discovery:")
+            click.echo("COMPLETE")
+            click.echo("")
+            click.echo("Runbook:")
+            click.echo("PREPARED")
+            click.echo("")
+            click.echo("Task:")
+            click.echo(f"output/{result.service_name}/{result.generation_key}/RUNBOOK_TASK.md")
+            click.echo("")
+            click.echo("Expected artifact:")
+            click.echo(f"output/{result.service_name}/{result.generation_key}/RUNBOOK.md")
+            click.echo("")
+            click.echo("Confluence:")
+            click.echo("NOT PUBLISHED (dry-run)")
+            return
+
+        # Phase 5: Deterministic HTML Generation and Confluence Publication after Validation
+        html_path = result.runbook_html_path
+        html_error = None
+        confluence_config = ConfluenceConfig.from_dict(loaded_cfg.get("confluence", {}))
+        confluence_res = None
+
+        if result.validation_status == "PASSED":
+            repo_info = inspect_repository(str(repo_path))
+            output_dir = Path("output") / result.service_name / result.generation_key
+
+            # 1. Deterministic HTML generation
+            try:
+                html_target = generate_runbook_html(
+                    runbook_path=result.runbook_path,
+                    output_dir=output_dir,
+                    repo_name=repo_info.repo_name,
+                    service_name=result.service_name,
+                )
+                html_path = str(html_target)
+            except Exception as exc:
+                html_error = str(exc)
+                logging.error("Failed to generate HTML runbook: %s", exc)
+
+            # 2. Confluence publishing (if enabled)
+            confluence_pub = ConfluencePublisher(config=confluence_config)
+            confluence_res = confluence_pub.publish_runbook(
+                runbook_path=result.runbook_path,
+                repo_info=repo_info,
+                validation_status=result.validation_status,
+                dry_run=dry_run,
+            )
+
+            # 3. Update generation summary with HTML and Confluence info
+            summary_file = output_dir / "generation-summary.json"
+            if summary_file.exists():
+                try:
+                    sum_data = json.loads(summary_file.read_text(encoding="utf-8"))
+                    if html_path:
+                        sum_data["html"] = {"generated": True, "path": str(html_path)}
+                    elif html_error:
+                        sum_data["html"] = {"generated": False, "error": html_error}
+                    else:
+                        sum_data["html"] = {"generated": False, "reason": "Validation not passed"}
+
+                    sum_data["confluence"] = confluence_res.to_summary_dict(enabled=confluence_config.enabled)
+                    summary_file.write_text(json.dumps(sum_data, indent=2), encoding="utf-8")
+                except Exception as exc:
+                    logging.debug("Could not update generation summary: %s", exc)
+
+        click.echo("Production Support Runbook Generation")
+        click.echo("-------------------------------------")
+        click.echo("")
+        click.echo(f"Service: {result.service_name}")
+        click.echo(f"Commit: {result.commit_sha}")
+        click.echo(f"Environment: {result.environment}")
+        click.echo("")
+        click.echo("Deterministic facts loaded: YES")
+        click.echo(f"Generation engine: {result.engine}")
+        click.echo(f"Tool calls: {result.tool_calls}")
+        click.echo("")
+        click.echo("Discovery:")
+        click.echo(result.discovery_status)
+        if result.findings_path:
+            click.echo(f"Findings: {result.findings_path}")
+        click.echo("")
+        click.echo("Runbook:")
+        click.echo(result.runbook_path or "(Not yet generated)")
+        click.echo("")
+        click.echo(f"Validation: {result.validation_status}")
+        if result.validation_errors:
+            click.echo("Validation errors:")
+            for err in result.validation_errors:
+                click.echo(f"  - {err}")
+        click.echo("")
+        click.echo("HTML:")
+        if result.validation_status == "PASSED":
+            if html_path:
+                click.echo("GENERATED")
+                click.echo(str(html_path))
+            else:
+                click.echo("FAILED")
+                click.echo(html_error or "Unknown error during HTML rendering")
+        else:
+            click.echo("NOT GENERATED (validation failed)")
+        click.echo("")
+        click.echo("Evidence:")
+        click.echo(result.evidence_path or "None")
+        click.echo("")
+        click.echo("Confluence:")
+        if confluence_res:
+            if confluence_res.action == "DRY_RUN":
+                click.echo("DRY RUN")
+                click.echo(f"Action: {confluence_res.planned_action}")
+                click.echo(f"Parent Page ID: {confluence_res.parent_page_id}")
+                click.echo(f"Page title: {confluence_res.page_title}")
+                if confluence_res.page_id:
+                    click.echo(f"Existing Page ID: {confluence_res.page_id}")
+            elif confluence_res.action in ("CREATED", "UPDATED"):
+                click.echo(f"PUBLISHED ({confluence_res.action})")
+                click.echo(f"Page ID: {confluence_res.page_id}")
+                click.echo(f"Page title: {confluence_res.page_title}")
+                click.echo(f"Parent Page ID: {confluence_res.parent_page_id}")
+                if confluence_res.version:
+                    click.echo(f"Version: {confluence_res.version}")
+                if confluence_res.page_url:
+                    click.echo(f"URL: {confluence_res.page_url}")
+            elif confluence_res.action == "FAILED":
+                click.echo("FAILED")
+                click.echo(f"Reason: {confluence_res.error}")
+            elif confluence_res.action == "SKIPPED":
+                if not confluence_config.enabled:
+                    click.echo("NOT PUBLISHED (disabled)")
+                else:
+                    click.echo(f"SKIPPED ({confluence_res.error or 'not published'})")
+            else:
+                click.echo("NOT PUBLISHED (dry-run)")
+        else:
+            if not confluence_config.enabled:
+                click.echo("NOT PUBLISHED (disabled)")
+            else:
+                click.echo("NOT PUBLISHED (dry-run)")
+        return
     except Exception as exc:
-        logging.error("Pipeline unexpected error: %s", exc)
+        logging.error("Runbook generation failed: %s", exc)
         raise click.ClickException(str(exc)) from exc
 
 
