@@ -165,3 +165,175 @@ MIIEowIBAAKCAQEA0Y...
     result = validate_runbook(runbook_path, tmp_path, repo_info)
     assert result.passed is False
     assert any("credential" in r.lower() or "secret" in r.lower() for r in result.reasons)
+
+
+# ---------------------------------------------------------------------------
+# Specific False-Positive vs True-Positive Safety Tests
+# ---------------------------------------------------------------------------
+
+def test_validator_pass_on_list_context_prohibitions(tmp_path: Path, repo_info: RepositoryInfo):
+    """Verify list context prohibitions pass without false positives."""
+    runbook_path = tmp_path / "RUNBOOK.md"
+    runbook_content = """# Production Support Runbook - payments-service
+> **Service:** payments-service
+
+## Support Boundaries
+Support must not perform the following actions without explicit L3/Development approval:
+- Replay Kafka events
+- Change offsets
+- Modify database or Aerospike records
+- Restart pods
+
+These operations require explicit L3/Development approval and must not be performed independently by L1/L2 Support.
+""" + ("\nAdditional operational padding text to exceed minimum length requirements." * 5)
+    runbook_path.write_text(runbook_content, encoding="utf-8")
+
+    result = validate_runbook(runbook_path, tmp_path, repo_info)
+    assert result.passed is True
+    assert len(result.reasons) == 0
+
+
+def test_validator_pass_on_inline_prohibitions(tmp_path: Path, repo_info: RepositoryInfo):
+    """Verify individual prohibition statements pass safely."""
+    runbook_path = tmp_path / "RUNBOOK.md"
+    runbook_content = """# Production Support Runbook - payments-service
+> **Service:** payments-service
+
+## Safety Rules
+Do not modify production database records.
+Support must never restart pods as transaction recovery.
+Support must never manually reprocess financial transactions.
+Do not change Kafka offsets.
+Restarting pods must not be used as transaction recovery.
+""" + ("\nAdditional operational padding text to exceed minimum length requirements." * 5)
+    runbook_path.write_text(runbook_content, encoding="utf-8")
+
+    result = validate_runbook(runbook_path, tmp_path, repo_info)
+    assert result.passed is True
+    assert len(result.reasons) == 0
+
+
+def test_validator_fail_on_replay_kafka_instruction(tmp_path: Path, repo_info: RepositoryInfo):
+    """FAIL: Replay Kafka events and retry processing."""
+    runbook_path = tmp_path / "RUNBOOK.md"
+    runbook_content = """# Production Support Runbook - payments-service
+> **Service:** payments-service
+
+## Recovery Step
+Replay Kafka events and retry processing.
+""" + ("\nAdditional operational padding text to exceed minimum length requirements." * 5)
+    runbook_path.write_text(runbook_content, encoding="utf-8")
+
+    result = validate_runbook(runbook_path, tmp_path, repo_info)
+    assert result.passed is False
+    assert any("Replaying Kafka" in r for r in result.reasons)
+
+
+def test_validator_fail_on_change_offsets_instruction(tmp_path: Path, repo_info: RepositoryInfo):
+    """FAIL: Change Kafka offsets to recover the consumer."""
+    runbook_path = tmp_path / "RUNBOOK.md"
+    runbook_content = """# Production Support Runbook - payments-service
+> **Service:** payments-service
+
+## Recovery Step
+Change Kafka offsets to recover the consumer.
+""" + ("\nAdditional operational padding text to exceed minimum length requirements." * 5)
+    runbook_path.write_text(runbook_content, encoding="utf-8")
+
+    result = validate_runbook(runbook_path, tmp_path, repo_info)
+    assert result.passed is False
+    assert any("Kafka offsets" in r for r in result.reasons)
+
+
+def test_validator_fail_on_restart_pod_instruction(tmp_path: Path, repo_info: RepositoryInfo):
+    """FAIL: Restart the pod and retry the transaction."""
+    runbook_path = tmp_path / "RUNBOOK.md"
+    runbook_content = """# Production Support Runbook - payments-service
+> **Service:** payments-service
+
+## Recovery Step
+Restart the pod and retry the transaction.
+""" + ("\nAdditional operational padding text to exceed minimum length requirements." * 5)
+    runbook_path.write_text(runbook_content, encoding="utf-8")
+
+    result = validate_runbook(runbook_path, tmp_path, repo_info)
+    assert result.passed is False
+    assert any("Restarting pods" in r for r in result.reasons)
+
+
+def test_validator_fail_on_update_database_instruction(tmp_path: Path, repo_info: RepositoryInfo):
+    """FAIL: Update the database state manually."""
+    runbook_path = tmp_path / "RUNBOOK.md"
+    runbook_content = """# Production Support Runbook - payments-service
+> **Service:** payments-service
+
+## Recovery Step
+Update the database state manually.
+""" + ("\nAdditional operational padding text to exceed minimum length requirements." * 5)
+    runbook_path.write_text(runbook_content, encoding="utf-8")
+
+    result = validate_runbook(runbook_path, tmp_path, repo_info)
+    assert result.passed is False
+    assert any("mutating database" in r for r in result.reasons)
+
+
+# ---------------------------------------------------------------------------
+# Tightened Heading vs Semantic Prohibition Tests
+# ---------------------------------------------------------------------------
+
+def test_validator_pass_on_heading_plus_prohibited_wording_plus_dangerous_bullets(tmp_path: Path, repo_info: RepositoryInfo):
+    """PASS: heading + prohibited wording + dangerous bullets = PASS."""
+    runbook_path = tmp_path / "RUNBOOK.md"
+    runbook_content = """# Production Support Runbook - payments-service
+> **Service:** payments-service
+
+## Support Boundaries
+
+Support must not perform the following actions without explicit L3/Development approval:
+- Replay Kafka events
+- Change Kafka offsets
+- Modify production database records
+""" + ("\nAdditional operational padding text to exceed minimum length requirements." * 5)
+    runbook_path.write_text(runbook_content, encoding="utf-8")
+
+    result = validate_runbook(runbook_path, tmp_path, repo_info)
+    assert result.passed is True
+    assert len(result.reasons) == 0
+
+
+def test_validator_fail_on_heading_alone_plus_dangerous_bullets(tmp_path: Path, repo_info: RepositoryInfo):
+    """FAIL: heading alone + dangerous affirmative bullets = FAIL."""
+    runbook_path = tmp_path / "RUNBOOK.md"
+    runbook_content = """# Production Support Runbook - payments-service
+> **Service:** payments-service
+
+## Support Boundaries
+
+- Replay Kafka events to retry processing
+- Change Kafka offsets to recover the consumer
+""" + ("\nAdditional operational padding text to exceed minimum length requirements." * 5)
+    runbook_path.write_text(runbook_content, encoding="utf-8")
+
+    result = validate_runbook(runbook_path, tmp_path, repo_info)
+    assert result.passed is False
+    assert any("Replaying Kafka" in r or "Kafka offsets" in r for r in result.reasons)
+
+
+def test_validator_fail_on_heading_plus_support_can_plus_dangerous_bullets(tmp_path: Path, repo_info: RepositoryInfo):
+    """FAIL: heading + 'Support can:' + dangerous bullets = FAIL."""
+    runbook_path = tmp_path / "RUNBOOK.md"
+    runbook_content = """# Production Support Runbook - payments-service
+> **Service:** payments-service
+
+## Support Boundaries
+
+Support can:
+- Replay Kafka events
+- Change offsets
+""" + ("\nAdditional operational padding text to exceed minimum length requirements." * 5)
+    runbook_path.write_text(runbook_content, encoding="utf-8")
+
+    result = validate_runbook(runbook_path, tmp_path, repo_info)
+    assert result.passed is False
+    assert any("Replaying Kafka" in r or "Kafka offsets" in r for r in result.reasons)
+

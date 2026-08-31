@@ -1,0 +1,200 @@
+You are a senior Java/Spring Boot engineer investigating a service repository for operational understanding.
+
+You are NOT writing the Production Support Runbook yet.
+
+PRIMARY OBJECTIVE
+
+Investigate the repository and determine what is actually true about the application's runtime and operational behaviour.
+
+You may search and read repository files iteratively.
+
+Use service-facts.json as a starting map.
+
+Do not assume service-facts.json is complete or infallible.
+
+Repository implementation is the final authority.
+
+INVESTIGATE WHERE RELEVANT
+
+Explore areas such as:
+
+- service purpose
+- runtime entry points
+- request and transaction flows
+- asynchronous processing
+- trace identifiers
+- states
+- business rules
+- validations
+- downstream calls
+- HTTP clients
+- Kafka
+- persistence
+- schedulers/background processing
+- retries
+- timeouts
+- error handling
+- exact operational logs
+- failure behaviour
+- runtime configuration
+- health/metrics
+- security-sensitive behaviour
+- important functionality that appears intended but is not actually implemented
+
+This list guides investigation.
+
+It is NOT a mandatory output schema.
+
+FOLLOW IMPLEMENTATION
+
+Names are clues, not proof.
+
+Do NOT conclude runtime behaviour only because of:
+
+- class names
+- method names
+- package names
+- README
+- architecture documents
+- comments
+- interfaces
+- configuration keys
+
+Inspect actual implementation.
+
+Example:
+
+A class named ConfluencePublisher does NOT prove an HTTP call to Confluence exists.
+
+Inspect its implementation before concluding that Confluence is a runtime network dependency.
+
+FOLLOW IMPORTANT FLOWS
+
+For important entry points, follow code far enough to understand:
+
+entry point
+    ↓
+service/orchestration
+    ↓
+client/repository/dependency
+    ↓
+state/log/error behaviour
+
+Do not stop at the first matching source file if deeper investigation is necessary.
+
+NO INVENTED PROBABLE CAUSES
+
+Do not invent operational causes.
+
+Example:
+
+An in-memory store does NOT mean records expire unless expiration is implemented.
+
+A configured downstream URL does NOT prove the application calls it.
+
+ERROR ANALYSIS
+
+For important failure paths determine where possible:
+
+- triggering condition
+- actual error/failure code
+- exact log signature
+- resulting state
+- retry behaviour
+- observable Support evidence
+
+Trace executable paths.
+
+Do not infer failure codes merely from phase names.
+
+IMPORTANT NEGATIVE FINDINGS
+
+Record important negative findings when they prevent incorrect operational conclusions.
+
+Examples:
+
+- component exists but no outbound HTTP call was found
+- Kafka dependency exists but no consumer exists
+- retry configuration exists but retry execution is not implemented
+- configuration exists but no runtime usage was found
+
+EVIDENCE
+
+Important findings should reference repository-relative files and line ranges where possible.
+
+Do not reproduce large Java code blocks.
+
+Use evidence to support conclusions.
+
+FINDING LANGUAGE
+
+Use these concepts naturally:
+
+OBSERVED
+- directly supported by implementation/configuration
+
+INFERRED
+- reasonable interpretation based on multiple pieces of evidence
+
+NOT PROVEN
+- suggested by names/docs/configuration but not established by implementation
+
+Prefer OBSERVED findings.
+
+Use INFERRED carefully.
+
+Never present NOT PROVEN behaviour as fact.
+
+OUTPUT
+
+Write:
+
+REPOSITORY_FINDINGS.md
+
+This is an engineering investigation report, not an L1/L2 runbook.
+
+Use natural sections based on what the repository actually contains.
+
+Possible headings include:
+
+# Repository Findings
+
+## Service Purpose
+## Entry Points
+## Main Execution Flows
+## Trace Identifiers
+## States
+## Business Rules
+## External Dependencies
+## Kafka
+## Persistence
+## Failure Behaviour
+## Operational Logs
+## Configuration
+## Health and Monitoring
+## Important Negative Findings
+## Unresolved / Not Proven
+
+These headings are optional.
+
+Omit irrelevant areas.
+
+DO NOT
+
+- write RUNBOOK.md
+- optimize language for L1/L2
+- modify application source
+- generate application code
+- invent facts
+- force every investigation category into the output
+- treat architecture documents as executable truth
+
+Before finishing verify:
+
+- actual implementation was inspected
+- major flows were followed
+- unsupported assumptions were avoided
+- important negative findings were captured
+- important conclusions have evidence
+
+Write REPOSITORY_FINDINGS.md only.

@@ -25,6 +25,7 @@ class RepositoryInfo:
     commit_sha: str
     origin_url: str | None
     working_tree_clean: bool = True
+    repo_name: str = ""
 
 
 def _run_git_cmd(repo_path: Path, args: list[str]) -> str:
@@ -134,6 +135,31 @@ def resolve_service_name(repo_path: Path) -> str:
     return resolved.name
 
 
+def resolve_repo_name(repo_path: Path, origin_url: str | None = None) -> str:
+    """
+    Derive repository name preferably from Git origin URL (HTTPS or SSH),
+    or fall back to the repository root directory name.
+    """
+    if origin_url and origin_url.strip():
+        url = origin_url.strip()
+        # Strip trailing .git and slashes
+        if url.endswith(".git"):
+            url = url[:-4]
+        url = url.rstrip("/")
+        # Handle SSH scp-like syntax: git@github.com:org/repo
+        if ":" in url and "@" in url and not url.startswith("ssh://") and not url.startswith("http"):
+            parts = url.split(":")[-1].split("/")
+            if parts and parts[-1].strip():
+                return parts[-1].strip()
+        # Handle standard URLs (https://..., ssh://..., file://...)
+        parts = url.split("/")
+        if parts and parts[-1].strip():
+            return parts[-1].strip()
+
+    resolved = repo_path.resolve()
+    return resolved.name
+
+
 def resolve_branch(repo_path: Path) -> str | None:
     """Resolve current git branch. Returns None if in detached HEAD state or no branch."""
     resolved = repo_path.resolve()
@@ -175,11 +201,13 @@ def inspect_repository(repo_path: str) -> RepositoryInfo:
     commit_sha = resolve_commit_sha(path)
     origin_url = resolve_origin_url(path)
     working_tree_clean = resolve_working_tree_clean(path)
+    repo_name = resolve_repo_name(path, origin_url)
 
     LOGGER.info(
-        "Inspected repository metadata for %s: service=%s, branch=%s, commit=%s, clean=%s",
+        "Inspected repository metadata for %s: service=%s, repo=%s, branch=%s, commit=%s, clean=%s",
         path,
         service_name,
+        repo_name,
         branch,
         commit_sha[:8] if commit_sha else "none",
         working_tree_clean,
@@ -192,6 +220,7 @@ def inspect_repository(repo_path: str) -> RepositoryInfo:
         commit_sha=commit_sha,
         origin_url=origin_url,
         working_tree_clean=working_tree_clean,
+        repo_name=repo_name,
     )
 
 
@@ -205,7 +234,8 @@ def resolve_repository(
     Resolve repository metadata with optional overrides (for pipeline/CLI compatibility).
     """
     info = inspect_repository(str(repo_path))
-    
+    repo_name = info.repo_name or resolve_repo_name(Path(info.path), info.origin_url)
+
     return RepositoryInfo(
         path=info.path,
         service_name=service_override.strip() if service_override else info.service_name,
@@ -213,4 +243,5 @@ def resolve_repository(
         commit_sha=commit_override.strip() if commit_override else info.commit_sha,
         origin_url=info.origin_url,
         working_tree_clean=info.working_tree_clean,
+        repo_name=repo_name,
     )

@@ -1,6 +1,8 @@
-ai:
-  provider: idfc-coder
-  coder_cmd: idfc-coder
+generation:
+  default_engine: api  # api, idfc-coder, external-agent
+
+idfc_coder:
+  command: idfc-coder
   mode: interactive
 
 llm:
@@ -12,9 +14,9 @@ llm:
   max_total_tool_chars: 100000
 
 confluence:
-  base_url: https://your-org.atlassian.net
-  space_key: SUPPORT
-  username: your-email@org.com
-  api_token: ${CONFLUENCE_API_TOKEN}
-  parent_page_id: ""
-
+  enabled: false
+  base-url: ${CONFLUENCE_BASE_URL}
+  parent-page-id: ${CONFLUENCE_PARENT_PAGE_ID}
+  token: ${CONFLUENCE_TOKEN}
+  timeout-seconds: 30
+  preserve-manual-notes: true

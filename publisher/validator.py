@@ -11,15 +11,18 @@ from .repository import RepositoryInfo
 
 LOGGER = logging.getLogger(__name__)
 
-# Patterns that indicate unsafe operations recommended to Support
+# Patterns that indicate unsafe operations if recommended to Support
 UNSAFE_ACTION_PATTERNS = [
-    (r"(?<!must not\s)(?<!do not\s)(?<!never\s)(?<!cannot\s)\breplay\s+(?:kafka|topic|events?)\b", "Replaying Kafka events/topics"),
-    (r"(?<!must not\s)(?<!do not\s)(?<!never\s)(?<!cannot\s)\b(?:change|reset|modify)\s+offsets?\b", "Modifying/resetting Kafka offsets"),
+    (r"\b(?:replay|re-play|republish|re-send|resend)\s+(?:the\s+)?(?:kafka|topic|events?|messages?)\b", "Replaying Kafka events/topics"),
+    (r"\breplay\s+kafka\b", "Replaying Kafka events/topics"),
+    (r"\b(?:change|reset|modify|advance|seek|set)\s+(?:the\s+)?(?:kafka\s+)?(?:consumer\s+)?offsets?\b", "Modifying/resetting Kafka offsets"),
     (r"\bUPDATE\s+[A-Za-z0-9_]+\s+SET\b", "Direct SQL UPDATE statement"),
     (r"\bDELETE\s+FROM\s+[A-Za-z0-9_]+\b", "Direct SQL DELETE statement"),
-    (r"(?<!must not\s)(?<!do not\s)(?<!never\s)(?<!cannot\s)\b(?:modify|update|delete)\s+(?:aerospike|database\s+records?)\b", "Directly mutating database or Aerospike records"),
-    (r"(?<!must not\s)(?<!do not\s)(?<!never\s)(?<!cannot\s)\b(?:force|manually\s+change)\s+(?:transaction\s+)?state\b", "Forcing transaction state without authorization"),
-    (r"(?<!must not\s)(?<!do not\s)(?<!never\s)(?<!cannot\s)\bchange\s+production\s+config(?:uration)?\b", "Changing production configuration directly"),
+    (r"\b(?:modify|update|delete|mutate|insert)\s+(?:the\s+)?(?:production\s+)?(?:aerospike|database\s+records?|database\s+state|database|db\s+records?)\b", "Directly mutating database or Aerospike records"),
+    (r"\b(?:force|manually\s+change|manually\s+update|manually\s+reprocess)\s+(?:the\s+)?(?:transaction\s+)?state\b", "Forcing transaction state without authorization"),
+    (r"\bmanually\s+reprocess\s+(?:the\s+)?(?:financial\s+)?transactions?\b", "Manually reprocessing transactions without authorization"),
+    (r"\b(?:restart|restarting)\s+(?:the\s+)?pods?\b", "Restarting pods as transaction recovery"),
+    (r"\b(?:change|modify|edit|update)\s+(?:the\s+)?production\s+config(?:uration)?\b", "Changing production configuration directly"),
 ]
 
 SECRET_PATTERNS = [
@@ -28,6 +31,34 @@ SECRET_PATTERNS = [
     (r"\bAKIA[0-9A-Z]{16}\b", "AWS Access Key ID"),
     (r"\b(?:api_key|apikey|secret_key|private_key)\s*[:=]\s*[\"'][A-Za-z0-9_\-]{20,}[\"']", "Exposed API secret key"),
 ]
+
+PROHIBITION_PHRASES = (
+    "must not",
+    "must never",
+    "do not",
+    "don't",
+    "never",
+    "cannot",
+    "can't",
+    "should not",
+    "shouldn't",
+    "shall not",
+    "prohibited",
+    "forbidden",
+    "not permitted",
+    "not allowed",
+    "strictly prohibited",
+    "without l3",
+    "without approval",
+    "approval required",
+    "l3 approval",
+    "l3/development approval",
+    "explicit approval",
+    "not be used",
+    "not authorized",
+    "avoid",
+    "refrain from",
+)
 
 
 @dataclass
@@ -93,32 +124,54 @@ def validate_runbook(
     if re.search(r"^diff --git ", content, re.MULTILINE) or re.search(r"^--- a/.*?\n\+\+\+ b/", content, re.MULTILINE):
         reasons.append("Runbook contains application source diff/patch markers.")
 
-    # 8. Unsafe support actions
-    lines = content.splitlines()
-    for line in lines:
+    # 8. Unsafe support actions (Block- and List-Aware Context)
+    in_prohibition_list = False
+    for line in content.splitlines():
         line_clean = line.strip()
-        if not line_clean or line_clean.startswith("#"):
-            continue
-        line_lower = line_clean.lower()
-        # If the line is an explicit boundary rule (negation/prohibition), skip it
-        if any(neg in line_lower for neg in (
-            "must not", "do not", "never", "cannot", "should not",
-            "prohibited", "forbidden", "not permitted", "not allowed",
-            "without l3", "without approval", "approval required", "l3 approval"
-        )):
+        if not line_clean:
             continue
 
-        for pattern, description in UNSAFE_ACTION_PATTERNS:
-            match = re.search(pattern, line_clean, re.IGNORECASE)
-            if match:
-                reasons.append(f"Runbook contains unsafe support recommendation: {description} ('{match.group(0)}')")
-                break
+        if line_clean.startswith("#"):
+            # Headings are organizational structure and must never activate prohibition context by themselves
+            in_prohibition_list = False
+            continue
+
+        line_lower = line_clean.lower()
+        is_bullet = line_clean.startswith(("-", "*", "+")) or bool(re.match(r"^\d+\.", line_clean))
+        has_prohibition_phrase = any(neg in line_lower for neg in PROHIBITION_PHRASES)
+
+        if not is_bullet:
+            if has_prohibition_phrase:
+                in_prohibition_list = True
+                continue
+            else:
+                in_prohibition_list = False
+                for pattern, description in UNSAFE_ACTION_PATTERNS:
+                    match = re.search(pattern, line_clean, re.IGNORECASE)
+                    if match:
+                        reasons.append(f"Runbook contains unsafe support recommendation: {description} ('{match.group(0)}')")
+                        break
+        else:
+            if has_prohibition_phrase or in_prohibition_list:
+                continue
+
+            for pattern, description in UNSAFE_ACTION_PATTERNS:
+                match = re.search(pattern, line_clean, re.IGNORECASE)
+                if match:
+                    reasons.append(f"Runbook contains unsafe support recommendation: {description} ('{match.group(0)}')")
+                    break
 
     # 9. Secret exposure check
     for pattern, description in SECRET_PATTERNS:
         if re.search(pattern, content):
             reasons.append(f"Runbook appears to contain exposed credentials/secrets: {description}.")
             break
+
+    # 10. Obvious internal implementation leakage
+    leakage_matches = re.findall(r"\b(?:ThreadPoolTaskExecutor|RunbookJobController|RunbookJobService|CreateJobRequest|PublishRequest)\b", content)
+    if leakage_matches:
+        unique_matches = sorted(set(leakage_matches))
+        reasons.append(f"Runbook exposes internal Java implementation class names ({', '.join(unique_matches)}), which should be omitted from L1/L2 operational documentation.")
 
     passed = len(reasons) == 0
     _write_report(run_dir, passed, reasons, repo_info.service_name, char_count)

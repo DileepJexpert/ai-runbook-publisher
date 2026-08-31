@@ -131,7 +131,78 @@ python run.py --help
 - `--build-index`: Build deterministic code index without AI or Confluence.
 - `--search-index "query"`: Search code index with keyword query.
 - `--ask-repo "question"`: Ask a question about the repository using the tool-calling LLM agent.
+- `--generate-runbook`: Directly generate and validate a Production Support Runbook using the selected generation engine.
+- `--engine [api|idfc-coder|external-agent]`: Select the generation engine (default: `api` or config `generation.default_engine`).
+- `--output-suffix SUFFIX`: Append suffix to output runbook filename (e.g. `--output-suffix api` -> `RUNBOOK-api.md`).
 - `--agent-debug`: Print tool calls during agent investigation (omits source bodies and credentials).
+
+---
+
+## Flag-Based Generation Engines
+
+The runbook generator uses a single, shared pipeline with pluggable generation engines:
+
+### 1. API Mode (`--engine api`)
+Uses `RepositoryAgent` with safe repository tools (`search_code`, `read_lines`, `list_files`, `get_service_facts`) and an organization-approved OpenAI-compatible LLM gateway.
+
+```bash
+export LLM_BASE_URL="https://your-approved-gateway.internal/v1"
+export LLM_API_KEY="your-api-key"
+export LLM_MODEL="gpt-4o"
+
+python run.py \
+  --repo /path/to/service \
+  --generate-runbook \
+  --engine api \
+  --environment production \
+  --dry-run \
+  --agent-debug
+```
+
+### 2. IDFC-Coder Mode (`--engine idfc-coder`)
+Launches the local `idfc-coder` CLI directly from inside the target repository working directory (`cwd`), preserving interactive SSO, clipboard tasks, and local tool capabilities.
+
+```bash
+python run.py \
+  --repo /path/to/service \
+  --generate-runbook \
+  --engine idfc-coder \
+  --dry-run
+```
+
+### 3. External Agent Mode (`--engine external-agent`)
+A manual bridge for local testing with Codex, Antigravity, or other external AI coding assistants using a clean 3-step state machine:
+
+```bash
+# Step 1: Prepare Discovery Task
+python run.py \
+  --repo /path/to/service \
+  --generate-runbook \
+  --engine external-agent \
+  --environment production \
+  --dry-run
+# Creates: output/<service>/<commit-short>/DISCOVERY_TASK.md
+# External agent inspects repo and writes REPOSITORY_FINDINGS.md
+
+# Step 2: Prepare Fresh Runbook Task
+python run.py \
+  --repo /path/to/service \
+  --generate-runbook \
+  --engine external-agent \
+  --environment production \
+  --dry-run
+# Creates: output/<service>/<commit-short>/RUNBOOK_TASK.md
+# Fresh external agent converts REPOSITORY_FINDINGS.md into RUNBOOK.md (without re-opening repo)
+
+# Step 3: Common Validation
+python run.py \
+  --repo /path/to/service \
+  --generate-runbook \
+  --engine external-agent \
+  --environment production \
+  --dry-run
+# Runs validator against generated RUNBOOK.md and outputs PASS/FAIL
+```
 
 ---
 
