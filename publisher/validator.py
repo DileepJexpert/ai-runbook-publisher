@@ -11,18 +11,26 @@ from .repository import RepositoryInfo
 
 LOGGER = logging.getLogger(__name__)
 
-# Patterns that indicate unsafe operations if recommended to Support
+# Patterns that indicate unsafe operations if recommended or instructed to Support
 UNSAFE_ACTION_PATTERNS = [
     (r"\b(?:replay|re-play|republish|re-send|resend)\s+(?:the\s+)?(?:kafka|topic|events?|messages?)\b", "Replaying Kafka events/topics"),
     (r"\breplay\s+kafka\b", "Replaying Kafka events/topics"),
-    (r"\b(?:change|reset|modify|advance|seek|set)\s+(?:the\s+)?(?:kafka\s+)?(?:consumer\s+)?offsets?\b", "Modifying/resetting Kafka offsets"),
+    (r"\b(?:kafka|event|message)\s+replay\b", "Replaying Kafka events/topics"),
+    (r"\breprocess(?:ing)?\s+(?:the\s+)?(?:kafka|events?|messages?)\b", "Reprocessing Kafka events/messages"),
+    (r"\b(?:change|reset|modify|advance|seek|set|adjust)\s+(?:the\s+)?(?:kafka\s+)?(?:consumer\s+)?offsets?\b", "Modifying/resetting Kafka offsets"),
+    (r"\b(?:offset|consumer\s+offset)\s+(?:change|reset|modification|mutation)\b", "Modifying/resetting Kafka offsets"),
     (r"\bUPDATE\s+[A-Za-z0-9_]+\s+SET\b", "Direct SQL UPDATE statement"),
     (r"\bDELETE\s+FROM\s+[A-Za-z0-9_]+\b", "Direct SQL DELETE statement"),
-    (r"\b(?:modify|update|delete|mutate|insert)\s+(?:the\s+)?(?:production\s+)?(?:aerospike|database\s+records?|database\s+state|database|db\s+records?)\b", "Directly mutating database or Aerospike records"),
-    (r"\b(?:force|manually\s+change|manually\s+update|manually\s+reprocess)\s+(?:the\s+)?(?:transaction\s+)?state\b", "Forcing transaction state without authorization"),
-    (r"\bmanually\s+reprocess\s+(?:the\s+)?(?:financial\s+)?transactions?\b", "Manually reprocessing transactions without authorization"),
+    (r"\bINSERT\s+INTO\s+[A-Za-z0-9_]+\b", "Direct SQL INSERT statement"),
+    (r"\b(?:modify|update|delete|mutate|insert)\s+(?:the\s+)?(?:production\s+)?(?:aerospike|database\s+records?|database\s+state|database|db\s+records?|db\s+rows?|table\s+records?)\b", "Directly mutating database or Aerospike records"),
+    (r"\b(?:edit|change)\s+(?:the\s+)?(?:production\s+)?(?:aerospike|database|db)\s+records?\b", "Directly mutating database or Aerospike records"),
+    (r"\b(?:force|manually\s+change|manually\s+update|manually\s+reprocess|forcefully\s+set)\s+(?:the\s+)?(?:transaction\s+)?state\b", "Forcing transaction state without authorization"),
+    (r"\bmanually\s+reprocess\s+(?:the\s+)?(?:financial\s+|payment\s+)?transactions?\b", "Manually reprocessing transactions without authorization"),
+    (r"\b(?:manual\s+reprocessing|manual\s+reprocess)\b", "Manual reprocessing without authorization"),
     (r"\b(?:restart|restarting)\s+(?:the\s+)?pods?\b", "Restarting pods as transaction recovery"),
+    (r"\b(?:restart|restarting)\s+(?:the\s+)?(?:service|application)\s+to\s+recover\b", "Restarting service as transaction recovery"),
     (r"\b(?:change|modify|edit|update)\s+(?:the\s+)?production\s+config(?:uration)?\b", "Changing production configuration directly"),
+    (r"\b(?:force|manually\s+trigger)\s+(?:the\s+)?scheduler\b", "Forcing scheduler execution"),
 ]
 
 SECRET_PATTERNS = [
@@ -32,33 +40,66 @@ SECRET_PATTERNS = [
     (r"\b(?:api_key|apikey|secret_key|private_key)\s*[:=]\s*[\"'][A-Za-z0-9_\-]{20,}[\"']", "Exposed API secret key"),
 ]
 
-PROHIBITION_PHRASES = (
-    "must not",
-    "must never",
-    "do not",
-    "don't",
-    "never",
-    "cannot",
-    "can't",
-    "should not",
-    "shouldn't",
-    "shall not",
-    "prohibited",
-    "forbidden",
-    "not permitted",
-    "not allowed",
-    "strictly prohibited",
-    "without l3",
-    "without approval",
-    "approval required",
-    "l3 approval",
-    "l3/development approval",
-    "explicit approval",
-    "not be used",
-    "not authorized",
-    "avoid",
-    "refrain from",
-)
+# Patterns that indicate explicit prohibition, warning, negation, or authorization requirement
+PROHIBITION_REGEX_PATTERNS = [
+    r"\bmust\s+not\b",
+    r"\bmust\s+never\b",
+    r"\bdo\s+not\b",
+    r"\bdon't\b",
+    r"\bdoes\s+not\b",
+    r"\bdoesn't\b",
+    r"\bdid\s+not\b",
+    r"\bdidn't\b",
+    r"\bnever\b",
+    r"\bcannot\b",
+    r"\bcan't\b",
+    r"\bcan\s+not\b",
+    r"\bcould\s+not\b",
+    r"\bcouldn't\b",
+    r"\bshould\s+not\b",
+    r"\bshouldn't\b",
+    r"\bshall\s+not\b",
+    r"\bwould\s+not\b",
+    r"\bwouldn't\b",
+    r"\bprohibited\b",
+    r"\bforbidden\b",
+    r"\bdisallowed\b",
+    r"\bnot\s+permitted\b",
+    r"\bnot\s+allowed\b",
+    r"\bnot\s+authorized\b",
+    r"\bnot\s+acceptable\b",
+    r"\bstrictly\s+prohibited\b",
+    r"\bstrictly\s+forbidden\b",
+    r"\bwithout\s+(?:explicit\s+)?(?:l3|development|developer|lead|prior|management)?\s*(?:approval|authorization)\b",
+    r"\bapproval\s+required\b",
+    r"\brequires?\s+(?:explicit\s+)?(?:l3|development|developer|lead|prior)?\s*(?:approval|authorization)\b",
+    r"\bl3\s+approval\b",
+    r"\bl3/development\s+approval\b",
+    r"\bexplicit\s+approval\b",
+    r"\bnot\s+be\s+used\b",
+    r"\bnot\s+to\s+(?:be\s+)?(?:used|performed|replayed|modified|reset|restarted)\b",
+    r"\bavoid\b",
+    r"\bavoiding\b",
+    r"\brefrain\s+from\b",
+    r"\bout\s+of\s+scope\b",
+    r"\bno\s+(?:kafka\s+)?(?:replay|re-play|reprocessing)\b",
+    r"\bno\s+(?:manual\s+)?(?:reprocessing|modification|mutation|update)\b",
+    r"\bno\s+(?:offset|db|database|aerospike|pod)\s+(?:changes?|mutations?|resets?|restarts?)\b",
+    r"^[-*+\d.)\s]*no\s+(?:kafka|manual|database|db|aerospike|offset|pod|event|message|state|production|direct|reprocessing|replay|mutation|modification|update|change|restart)\b",
+]
+
+COMPILED_PROHIBITION_PATTERNS = [re.compile(p, re.IGNORECASE) for p in PROHIBITION_REGEX_PATTERNS]
+
+
+def is_prohibited_context(text: str) -> bool:
+    """Check whether a text line, clause, or item expresses explicit prohibition or negation."""
+    if not text:
+        return False
+    text_clean = text.strip()
+    for pattern in COMPILED_PROHIBITION_PATTERNS:
+        if pattern.search(text_clean):
+            return True
+    return False
 
 
 @dataclass
@@ -124,7 +165,7 @@ def validate_runbook(
     if re.search(r"^diff --git ", content, re.MULTILINE) or re.search(r"^--- a/.*?\n\+\+\+ b/", content, re.MULTILINE):
         reasons.append("Runbook contains application source diff/patch markers.")
 
-    # 8. Unsafe support actions (Block- and List-Aware Context)
+    # 8. Unsafe support actions (Negation-, Item-, and List-Aware Context)
     in_prohibition_list = False
     for line in content.splitlines():
         line_clean = line.strip()
@@ -136,23 +177,23 @@ def validate_runbook(
             in_prohibition_list = False
             continue
 
-        line_lower = line_clean.lower()
-        is_bullet = line_clean.startswith(("-", "*", "+")) or bool(re.match(r"^\d+\.", line_clean))
-        has_prohibition_phrase = any(neg in line_lower for neg in PROHIBITION_PHRASES)
+        is_bullet = line_clean.startswith(("-", "*", "+")) or bool(re.match(r"^\d+[.)]\s*", line_clean))
+        line_is_prohibited = is_prohibited_context(line_clean)
 
         if not is_bullet:
-            if has_prohibition_phrase:
+            if line_is_prohibited:
                 in_prohibition_list = True
                 continue
             else:
                 in_prohibition_list = False
+                # Check if this non-bullet line contains an unsafe recommendation
                 for pattern, description in UNSAFE_ACTION_PATTERNS:
                     match = re.search(pattern, line_clean, re.IGNORECASE)
                     if match:
                         reasons.append(f"Runbook contains unsafe support recommendation: {description} ('{match.group(0)}')")
                         break
         else:
-            if has_prohibition_phrase or in_prohibition_list:
+            if line_is_prohibited or in_prohibition_list:
                 continue
 
             for pattern, description in UNSAFE_ACTION_PATTERNS:

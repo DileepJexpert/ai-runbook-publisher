@@ -259,3 +259,52 @@ python run.py \
 ```bash
 pytest -v
 ```
+
+---
+
+## Generation Identity, Caching & Artifact Reuse
+
+The publisher uses a deterministic three-way identity system to ensure reproducible artifacts and prevent redundant AI runs:
+
+### 1. Distinct Identities
+- **`generationKey`**: Deterministic SHA-256 fingerprint representing the logical runbook generation:
+  $$\text{generationKey} = \text{SHA256}(\text{serviceId} + \text{sourceFingerprint} + \text{promptFingerprint} + \text{contractVersion} + \text{platformContext})$$
+- **`attemptId`**: Unique execution identifier (`att-YYYYMMDD-HHMMSS-xxxxxx`) tracking individual execution attempts, diagnostic logs, and retries under the *same* `generationKey`.
+- **`commitSha`**: Git commit metadata.
+
+### 2. Local Dirty-Worktree Fingerprinting
+`sourceFingerprint` deterministically hashes all relevant tracked and uncommitted local source, configuration, and resource files while ignoring non-source noise (`.git`, `build/`, `target/`, `.gradle/`, `node_modules/`, `.idea/`, virtual environments, outputs).
+- Editing any Java or config file changes `sourceFingerprint` $\rightarrow$ triggers a new `generationKey` even without committing.
+- Editing noise files (logs, build directories) does not change `sourceFingerprint`.
+
+### 3. Reuse & Retry Semantics
+- **`CACHE HIT`**: If an identical successful generation (`status == "COMPLETE"`) exists with all mandatory artifacts, the publisher reuses the existing runbook and skips invoking AI engines.
+- **`CACHE MISS`**: If source code, prompts, or contracts change, a fresh generation begins under a new `generationKey`.
+- **`RETRY`**: If a previous generation was interrupted or failed, a new `attemptId` is launched under the existing `generationKey`.
+- **`--force`**: Forces a new generation attempt under the same `generationKey` without changing the logical identity:
+  ```bash
+  python run.py --repo /path/to/service --generate-runbook --engine idfc-coder --force
+  ```
+
+### 4. Output Structure
+Artifacts are organized by logical generation and attempt diagnostics:
+```text
+output/
+  <serviceId>/
+    <generationKey>/
+      generation-metadata.json
+      service-facts.json
+      REPOSITORY_FINDINGS.md
+      RUNBOOK.md
+      confluence-body.html
+      RUNBOOK.html
+      validation-report.txt
+      generation-summary.json
+      attempts/
+        <attemptId>/
+          attempt-metadata.json
+          agent.log
+          stderr.log
+          stdout.log
+```
+

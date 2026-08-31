@@ -8,7 +8,6 @@ import os
 from pathlib import Path
 from typing import Any
 
-from agent.agent_loop import RepositoryAgent
 from agent.llm_client import LlmClient, OpenAiLlmClient
 from agent.models import AgentConfig, LlmMessage
 from collector.models import ServiceFacts
@@ -94,6 +93,8 @@ class ApiAgentEngine:
             max_total_tool_chars=self.config.max_total_tool_chars,
             debug=context.agent_debug or self.config.debug,
         )
+
+        from agent.agent_loop import RepositoryAgent
 
         discovery_agent = RepositoryAgent(
             repo_path=context.repo_path,

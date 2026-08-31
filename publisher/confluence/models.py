@@ -32,6 +32,7 @@ class ConfluenceConfig:
     """Deterministic configuration for Confluence."""
     enabled: bool = False
     base_url: str = ""
+    page_id: str = ""
     parent_page_id: str = ""
     token: str = ""
     timeout_seconds: int = 30
@@ -59,6 +60,13 @@ class ConfluenceConfig:
             or data.get("base-url")
             or ""
         ).strip().rstrip("/")
+
+        page_id = str(
+            os.environ.get("CONFLUENCE_PAGE_ID")
+            or data.get("page_id")
+            or data.get("page-id")
+            or ""
+        ).strip()
 
         parent_page_id = str(
             os.environ.get("CONFLUENCE_PARENT_PAGE_ID")

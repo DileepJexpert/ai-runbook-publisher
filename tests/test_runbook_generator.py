@@ -112,8 +112,9 @@ Collect the service name, version, environment, transaction identifier, exact lo
 # Unit and Integration Tests
 # ---------------------------------------------------------------------------
 
-def test_01_runbook_prompt_loaded_and_metadata_included(tmp_path):
+def test_01_runbook_prompt_loaded_and_metadata_included(tmp_path, monkeypatch):
     repo = _make_git_repo(tmp_path, SAMPLE_REPO_FILES)
+    monkeypatch.chdir(tmp_path)
 
     captured_prompts = []
 

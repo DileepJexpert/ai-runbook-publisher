@@ -106,11 +106,13 @@ class ConfluencePublisher:
         repo_info: RepositoryInfo,
         validation_status: str,
         dry_run: bool = True,
+        page_id: str | None = None,
     ) -> ConfluencePublishResult:
         """
-        Publish validated RUNBOOK.md to Confluence as a child page of configured parent.
+        Publish validated RUNBOOK.md to Confluence using exact configured pageId.
         """
         repo_name = repo_info.repo_name or repo_info.service_name
+        target_page_id = (page_id or self.config.page_id or "").strip()
         parent_page_id = self.config.parent_page_id
 
         # 1. Validation check: must be PASSED
@@ -123,6 +125,7 @@ class ConfluencePublisher:
                 action="SKIPPED",
                 success=False,
                 page_title=repo_name,
+                page_id=target_page_id or None,
                 parent_page_id=parent_page_id,
                 error="Runbook validation did not pass. Confluence publishing skipped.",
             )
@@ -137,25 +140,28 @@ class ConfluencePublisher:
                 action="SKIPPED",
                 success=True,
                 page_title=repo_name,
+                page_id=target_page_id or None,
                 parent_page_id=parent_page_id,
                 error=None,
             )
 
         # 3. Required configuration check
-        if not self.config.base_url or not self.config.parent_page_id or not self.config.token:
-            missing = []
-            if not self.config.base_url:
-                missing.append("base-url")
-            if not self.config.parent_page_id:
-                missing.append("parent-page-id")
-            if not self.config.token:
-                missing.append("token")
+        missing = []
+        if not self.config.base_url:
+            missing.append("base-url")
+        if not target_page_id and not self.config.parent_page_id:
+            missing.append("page-id (or parent-page-id)")
+        if not self.config.token:
+            missing.append("token")
+
+        if missing:
             err_msg = f"Confluence is enabled but missing required configuration: {', '.join(missing)}"
             LOGGER.error("repoName=%s confluencePublishStatus=FAILED reason=%s", repo_name, err_msg)
             return ConfluencePublishResult(
                 action="FAILED",
                 success=False,
                 page_title=repo_name,
+                page_id=target_page_id or None,
                 parent_page_id=parent_page_id,
                 error=err_msg,
             )
@@ -169,6 +175,7 @@ class ConfluencePublisher:
                 action="FAILED",
                 success=False,
                 page_title=repo_name,
+                page_id=target_page_id or None,
                 parent_page_id=parent_page_id,
                 error=err_msg,
             )
@@ -182,10 +189,88 @@ class ConfluencePublisher:
                 action="FAILED",
                 success=False,
                 page_title=repo_name,
+                page_id=target_page_id or None,
                 parent_page_id=parent_page_id,
                 error=err_msg,
             )
 
+        # --- A. EXACT PAGE ID FLOW (NO TITLE DISCOVERY, NO PAGE CREATION) ---
+        if target_page_id:
+            try:
+                full_page = self.client.get_page(target_page_id)
+            except Exception as exc:
+                err_msg = f"Failed to retrieve configured Confluence page {target_page_id}: {exc}"
+                LOGGER.error("repoName=%s confluencePublishStatus=FAILED reason=%s", repo_name, err_msg)
+                return ConfluencePublishResult(
+                    action="FAILED",
+                    success=False,
+                    page_id=target_page_id,
+                    page_title=repo_name,
+                    error=err_msg,
+                )
+
+            preserved_notes = ""
+            if self.config.preserve_manual_notes:
+                try:
+                    preserved_notes = extract_manual_notes(full_page.body_storage)
+                except ConfluenceManualNotesError as exc:
+                    err_msg = f"Manual notes parsing error on existing page {target_page_id}: {exc}"
+                    LOGGER.error("repoName=%s confluencePublishStatus=FAILED reason=%s", repo_name, err_msg)
+                    return ConfluencePublishResult(
+                        action="FAILED",
+                        success=False,
+                        page_id=target_page_id,
+                        page_title=full_page.title or repo_name,
+                        error=err_msg,
+                    )
+
+            updated_markdown = inject_manual_notes(runbook_content, preserved_notes) if preserved_notes else runbook_content
+
+            if dry_run:
+                LOGGER.info("repoName=%s confluenceAction=DRY_RUN action=UPDATE pageId=%s", repo_name, target_page_id)
+                return ConfluencePublishResult(
+                    action="DRY_RUN",
+                    planned_action="UPDATE",
+                    success=True,
+                    page_id=target_page_id,
+                    page_title=full_page.title or repo_name,
+                    version=full_page.version + 1,
+                    manual_notes_preserved=bool(preserved_notes),
+                )
+
+            try:
+                LOGGER.info("repoName=%s confluenceAction=UPDATE pageId=%s", repo_name, target_page_id)
+                body_storage = self.client.markdown_to_storage(updated_markdown)
+                next_version = full_page.version + 1
+                page_title = full_page.title or repo_name
+                updated = self.client.update_page(
+                    page_id=target_page_id,
+                    title=page_title,
+                    version=next_version,
+                    body_storage=body_storage,
+                )
+                LOGGER.info("repoName=%s confluencePublishStatus=SUCCESS pageId=%s", repo_name, updated.id)
+                return ConfluencePublishResult(
+                    action="UPDATED",
+                    success=True,
+                    page_id=updated.id,
+                    page_title=updated.title,
+                    version=updated.version,
+                    manual_notes_preserved=bool(preserved_notes),
+                    page_url=f"{self.config.base_url}/pages/{updated.id}",
+                )
+            except Exception as exc:
+                err_msg = f"Failed to update Confluence page {target_page_id}: {exc}"
+                LOGGER.error("repoName=%s confluencePublishStatus=FAILED reason=%s", repo_name, err_msg)
+                return ConfluencePublishResult(
+                    action="FAILED",
+                    success=False,
+                    page_id=target_page_id,
+                    page_title=full_page.title or repo_name,
+                    error=err_msg,
+                )
+
+        # --- B. LEGACY PARENT PAGE SEARCH FLOW ---
         # 5. Search for child pages under configured parentPageId
         try:
             children = self.client.get_child_pages(parent_page_id)

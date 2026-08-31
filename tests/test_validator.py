@@ -337,3 +337,55 @@ Support can:
     assert result.passed is False
     assert any("Replaying Kafka" in r or "Kafka offsets" in r for r in result.reasons)
 
+
+def test_validator_pass_on_explicit_negations_and_prohibitions(tmp_path: Path, repo_info: RepositoryInfo):
+    """PASS: Verify explicit negative boundaries pass across various sentence and list forms."""
+    runbook_path = tmp_path / "RUNBOOK.md"
+    runbook_content = """# Production Support Runbook - payments-service
+> **Service:** payments-service
+
+## Support Boundaries
+- Do not replay Kafka events.
+- Never reset Kafka offsets.
+- L1/L2 must not modify production database records.
+- Manual reprocessing is not permitted.
+- Do not restart pods to recover an individual transaction.
+- No Kafka replay
+- Do not replay Kafka events; escalate to L2.
+- Do not reset Kafka offsets or replay events.
+- No manual reprocessing
+- No database modification
+""" + ("\nAdditional operational padding text to exceed minimum length requirements." * 5)
+    runbook_path.write_text(runbook_content, encoding="utf-8")
+
+    result = validate_runbook(runbook_path, tmp_path, repo_info)
+    assert result.passed is True
+    assert len(result.reasons) == 0
+
+
+def test_validator_fail_on_unsafe_affirmative_actions(tmp_path: Path, repo_info: RepositoryInfo):
+    """FAIL: Verify each dangerous affirmative action fails."""
+    cases = [
+        ("Replay the Kafka event.", "Replaying Kafka"),
+        ("Reset Kafka offsets.", "Kafka offsets"),
+        ("Update the production database record.", "database"),
+        ("Manually reprocess the transaction.", "reprocess"),
+        ("Restart the pod to recover the transaction.", "Restarting pods"),
+        ("Reset Kafka offsets and replay the event.", "unsafe"),
+    ]
+
+    for action_text, expected_err in cases:
+        runbook_path = tmp_path / "RUNBOOK.md"
+        runbook_content = f"""# Production Support Runbook - payments-service
+> **Service:** payments-service
+
+## Troubleshooting Steps
+{action_text}
+""" + ("\nAdditional operational padding text to exceed minimum length requirements." * 5)
+        runbook_path.write_text(runbook_content, encoding="utf-8")
+
+        result = validate_runbook(runbook_path, tmp_path, repo_info)
+        assert result.passed is False, f"Expected '{action_text}' to fail validation but passed."
+        assert any(expected_err.lower() in r.lower() for r in result.reasons), f"Expected error '{expected_err}' in {result.reasons}"
+
+

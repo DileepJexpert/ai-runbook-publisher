@@ -63,3 +63,8 @@ class GenerationEngine(Protocol):
     def generate(self, context: GenerationContext) -> EngineGenerationResult:
         """Execute discovery and runbook generation for the given context."""
         ...
+
+
+# Shared interface alias
+AiGenerationEngine = GenerationEngine
+

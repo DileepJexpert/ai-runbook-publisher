@@ -77,8 +77,18 @@ def load_config(path: str) -> dict:
 @click.option("--build-index", is_flag=True, default=False, help="Build deterministic Layer 2 searchable code index without AI or Confluence.")
 @click.option("--search-index", "search_query", default=None, help="Search the code index with the given query string (builds index if needed).")
 @click.option("--ask-repo", "ask_question", default=None, help="Ask a question about the repository using the tool-calling LLM agent.")
-@click.option("--generate-runbook", is_flag=True, default=False, help="Generate a Production Support Runbook directly using the selected generation engine.")
-@click.option("--agent-debug", is_flag=True, default=False, help="Show agent tool calls during repository investigation.")
+@click.option(
+    "--execution-mode",
+    type=click.Choice(["local", "pipeline"], case_sensitive=False),
+    default="local",
+    help="Execution mode (local: developer/interactive IDFC Coder; pipeline: non-interactive internal LLM API).",
+)
+@click.option(
+    "--deployed-commit",
+    default=None,
+    help="Authoritative deployed commit SHA for post-deployment pipeline publication.",
+)
+@click.option("--force", is_flag=True, default=False, help="Force a new execution attempt even if a complete generation exists.")
 def main(
     repo_path: Path,
     service: str | None,
@@ -99,6 +109,9 @@ def main(
     ask_question: str | None,
     generate_runbook: bool,
     agent_debug: bool,
+    force: bool,
+    execution_mode: str = "local",
+    deployed_commit: str | None = None,
 ) -> None:
     """Generate a Production Support Runbook for a Java Spring Boot microservice using IDFC Coder or deterministic fact collection."""
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -113,6 +126,11 @@ def main(
             active_engine_name = engine_name or gen_cfg.get("default_engine", "api")
             active_coder_cmd = coder_cmd or idfc_cfg.get("command")
             active_coder_mode = mode or idfc_cfg.get("mode")
+
+            if execution_mode.lower() == "pipeline":
+                if active_engine_name in ("idfc-coder", "idfc_coder", "local-idfc"):
+                    click.echo("Error: IDFC Coder is strictly prohibited in PIPELINE execution mode. Use --engine api.", err=True)
+                    sys.exit(1)
 
             engine_instance = create_generation_engine(
                 name=active_engine_name,
@@ -131,10 +149,38 @@ def main(
                 branch_override=branch,
                 output_suffix=output_suffix,
                 agent_debug=agent_debug,
+                force=force,
             )
 
+            # Startup Identity Display
+            click.echo(f"Service: {result.service_name}")
+            click.echo(f"Repository: {repo_path}")
+            click.echo(f"Branch: {branch or 'main'}")
+            click.echo(f"Commit: {result.commit_sha}")
+            click.echo(f"Working Tree Clean: {result.validation_status != 'FAILED'}")
+            click.echo(f"Source Fingerprint: {result.source_fingerprint}")
+            click.echo(f"Prompt Fingerprint: {result.prompt_fingerprint}")
+            click.echo(f"Generation Key: {result.generation_key}")
+            click.echo("")
+
+            if result.cache_hit:
+                click.echo("CACHE HIT")
+                click.echo("Existing COMPLETE generation found.")
+                click.echo(f"Skipping {result.engine.upper() if result.engine != 'cached' else 'generation engine'}.")
+                click.echo("")
+                click.echo("Existing successful generation found.")
+                click.echo("No relevant source or generation-rule changes detected.")
+                click.echo("Reusing existing runbook.")
+                click.echo("")
+                click.echo(f"Service: {result.service_name}")
+                click.echo(f"Generation Key: {result.generation_key}")
+                click.echo(f"Commit: {result.commit_sha}")
+                click.echo(f"Runbook: {result.runbook_path}")
+                if result.confluence_body_path:
+                    click.echo(f"Confluence HTML: {result.confluence_body_path}")
+                return
+
             if result.validation_status == "DISCOVERY_PREPARED":
-                commit_short = result.commit_sha[:16]
                 click.echo("Production Support Runbook")
                 click.echo("--------------------------")
                 click.echo("")
@@ -145,10 +191,10 @@ def main(
                 click.echo("PREPARED")
                 click.echo("")
                 click.echo("Task:")
-                click.echo(f"output/{result.service_name}/{commit_short}/DISCOVERY_TASK.md")
+                click.echo(f"output/{result.service_name}/{result.generation_key}/DISCOVERY_TASK.md")
                 click.echo("")
                 click.echo("Expected artifact:")
-                click.echo(f"output/{result.service_name}/{commit_short}/REPOSITORY_FINDINGS.md")
+                click.echo(f"output/{result.service_name}/{result.generation_key}/REPOSITORY_FINDINGS.md")
                 click.echo("")
                 click.echo("Runbook:")
                 click.echo("WAITING_FOR_DISCOVERY")
@@ -158,7 +204,6 @@ def main(
                 return
 
             if result.validation_status == "RUNBOOK_PREPARED":
-                commit_short = result.commit_sha[:16]
                 click.echo("Production Support Runbook")
                 click.echo("--------------------------")
                 click.echo("")
@@ -172,34 +217,34 @@ def main(
                 click.echo("PREPARED")
                 click.echo("")
                 click.echo("Task:")
-                click.echo(f"output/{result.service_name}/{commit_short}/RUNBOOK_TASK.md")
+                click.echo(f"output/{result.service_name}/{result.generation_key}/RUNBOOK_TASK.md")
                 click.echo("")
                 click.echo("Expected artifact:")
-                click.echo(f"output/{result.service_name}/{commit_short}/RUNBOOK.md")
+                click.echo(f"output/{result.service_name}/{result.generation_key}/RUNBOOK.md")
                 click.echo("")
                 click.echo("Confluence:")
                 click.echo("NOT PUBLISHED (dry-run)")
                 return
 
             # Phase 5: Deterministic HTML Generation and Confluence Publication after Validation
-            html_path = None
+            html_path = result.runbook_html_path
             html_error = None
             confluence_config = ConfluenceConfig.from_dict(loaded_cfg.get("confluence", {}))
             confluence_res = None
 
             if result.validation_status == "PASSED":
                 repo_info = inspect_repository(str(repo_path))
-                commit_short = result.commit_sha[:16]
-                output_dir = Path("output") / result.service_name / commit_short
+                output_dir = Path("output") / result.service_name / result.generation_key
 
                 # 1. Deterministic HTML generation
                 try:
-                    html_path = generate_runbook_html(
+                    html_target = generate_runbook_html(
                         runbook_path=result.runbook_path,
                         output_dir=output_dir,
                         repo_name=repo_info.repo_name,
                         service_name=result.service_name,
                     )
+                    html_path = str(html_target)
                 except Exception as exc:
                     html_error = str(exc)
                     logging.error("Failed to generate HTML runbook: %s", exc)

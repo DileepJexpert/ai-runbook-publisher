@@ -234,12 +234,11 @@ def test_09_idfc_coder_engine_creates_task_with_prompt_and_metadata(tmp_path, mo
     info = inspect_repository(str(repo))
     monkeypatch.chdir(tmp_path)
 
-    commit_short = info.commit_sha[:16]
-    out_dir = tmp_path / "output" / "order-service" / commit_short
-
     engine = IdfcCoderEngine(coder_cmd="python -c \"pass\"", mode="stdin")
     generator = RunbookGenerator(engine=engine)
     result = generator.generate(str(repo))
+
+    out_dir = tmp_path / "output" / "order-service" / result.generation_key
 
     # Verify discovery task file created with correct metadata
     task_file = out_dir / "idfc-coder-discovery-task.md"
@@ -260,9 +259,6 @@ def test_10_external_agent_engine_prepares_discovery_task_when_findings_absent(t
     info = inspect_repository(str(repo))
     monkeypatch.chdir(tmp_path)
 
-    commit_short = info.commit_sha[:16]
-    out_dir = tmp_path / "output" / "order-service" / commit_short
-
     engine = ExternalAgentEngine()
     generator = RunbookGenerator(engine=engine)
     result = generator.generate(str(repo), environment="production", version="1.0.0")
@@ -270,6 +266,7 @@ def test_10_external_agent_engine_prepares_discovery_task_when_findings_absent(t
     assert result.engine == "external-agent"
     assert result.validation_status == "DISCOVERY_PREPARED"
 
+    out_dir = tmp_path / "output" / "order-service" / result.generation_key
     task_file = out_dir / "DISCOVERY_TASK.md"
     assert task_file.is_file()
     content = task_file.read_text(encoding="utf-8")
@@ -286,15 +283,14 @@ def test_11_external_agent_engine_prepares_runbook_task_when_findings_present(tm
     info = inspect_repository(str(repo))
     monkeypatch.chdir(tmp_path)
 
-    commit_short = info.commit_sha[:16]
-    out_dir = tmp_path / "output" / "order-service" / commit_short
-    out_dir.mkdir(parents=True, exist_ok=True)
+    engine = ExternalAgentEngine()
+    generator = RunbookGenerator(engine=engine)
+    res_prep = generator.generate(str(repo), environment="production", version="1.0.0")
+    out_dir = tmp_path / "output" / "order-service" / res_prep.generation_key
 
     # Write REPOSITORY_FINDINGS.md
     (out_dir / "REPOSITORY_FINDINGS.md").write_text(GOOD_FINDINGS_MARKDOWN, encoding="utf-8")
 
-    engine = ExternalAgentEngine()
-    generator = RunbookGenerator(engine=engine)
     result = generator.generate(str(repo), environment="production", version="1.0.0")
 
     assert result.engine == "external-agent"
@@ -313,16 +309,15 @@ def test_12_external_agent_engine_validates_existing_runbook(tmp_path, monkeypat
     info = inspect_repository(str(repo))
     monkeypatch.chdir(tmp_path)
 
-    commit_short = info.commit_sha[:16]
-    out_dir = tmp_path / "output" / "order-service" / commit_short
-    out_dir.mkdir(parents=True, exist_ok=True)
+    engine = ExternalAgentEngine()
+    generator = RunbookGenerator(engine=engine)
+    res_prep = generator.generate(str(repo), environment="production", version="1.0.0")
+    out_dir = tmp_path / "output" / "order-service" / res_prep.generation_key
 
     (out_dir / "REPOSITORY_FINDINGS.md").write_text(GOOD_FINDINGS_MARKDOWN, encoding="utf-8")
     runbook_file = out_dir / "RUNBOOK.md"
     runbook_file.write_text(GOOD_RUNBOOK_MARKDOWN.replace("{COMMIT_SHA}", info.commit_sha), encoding="utf-8")
 
-    engine = ExternalAgentEngine()
-    generator = RunbookGenerator(engine=engine)
     result = generator.generate(str(repo), environment="production", version="1.0.0")
 
     assert result.engine == "external-agent"
@@ -340,9 +335,10 @@ def test_13_common_validator_catches_unsafe_instructions_across_engines(tmp_path
     info = inspect_repository(str(repo))
     monkeypatch.chdir(tmp_path)
 
-    commit_short = info.commit_sha[:16]
-    out_dir = tmp_path / "output" / "order-service" / commit_short
-    out_dir.mkdir(parents=True, exist_ok=True)
+    engine = ExternalAgentEngine()
+    generator = RunbookGenerator(engine=engine)
+    res_prep = generator.generate(str(repo))
+    out_dir = tmp_path / "output" / "order-service" / res_prep.generation_key
 
     (out_dir / "REPOSITORY_FINDINGS.md").write_text(GOOD_FINDINGS_MARKDOWN, encoding="utf-8")
     bad_runbook = f"""# Production Support Runbook - order-service
@@ -354,8 +350,6 @@ Support should manually force transaction state when stalled.
 """
     (out_dir / "RUNBOOK.md").write_text(bad_runbook, encoding="utf-8")
 
-    engine = ExternalAgentEngine()
-    generator = RunbookGenerator(engine=engine)
     result = generator.generate(str(repo))
 
     assert result.validation_status == "FAILED"

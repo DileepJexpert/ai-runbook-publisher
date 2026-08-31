@@ -1,4 +1,4 @@
-"""Production Support Runbook generation orchestrator with two-pass discovery & writing (Phase 4)."""
+"""Production Support Runbook generation orchestrator with two-pass discovery, identity caching, and attempts."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from typing import Any
 
 from agent.llm_client import LlmClient
 from agent.models import AgentConfig
-from collector import collect_service_facts, save_service_facts
 from collector.models import ServiceFacts
 from publisher.engines import (
     ApiAgentEngine,
@@ -19,6 +18,19 @@ from publisher.engines import (
     GenerationContext,
     GenerationEngine,
     create_generation_engine,
+)
+from publisher.html_generator import generate_runbook_html
+from publisher.identity import (
+    DEFAULT_CONTRACT_VERSION,
+    GenerationMetadata,
+    calculate_context_fingerprint,
+    calculate_generation_key,
+    calculate_prompt_fingerprint,
+    calculate_source_fingerprint,
+    create_attempt_id,
+    load_generation_metadata,
+    record_attempt,
+    save_generation_metadata,
 )
 from publisher.repository import RepositoryInfo, inspect_repository, resolve_repository
 from publisher.validator import ValidationResult, validate_runbook
@@ -48,12 +60,20 @@ class RunbookGenerationResult:
     discovery_status: str = "UNKNOWN"
     runbook_status: str = "UNKNOWN"
     repo_name: str = ""
+    generation_key: str = ""
+    generation_key_full: str = ""
+    source_fingerprint: str = ""
+    prompt_fingerprint: str = ""
+    attempt_id: str | None = None
+    cache_hit: bool = False
+    confluence_body_path: str | None = None
+    runbook_html_path: str | None = None
 
 
 class RunbookGenerator:
     """
     Orchestrates Production Support Runbook generation across pluggable generation engines.
-    Maintains a single shared pipeline: repository metadata -> service facts -> discovery -> fresh context runbook writing -> validation.
+    Maintains a deterministic generationKey identity, caching/reuse, attempt logging, and two-pass discovery & writing.
     """
 
     def __init__(
@@ -84,8 +104,11 @@ class RunbookGenerator:
         engine: GenerationEngine | str | None = None,
         output_suffix: str | None = None,
         agent_debug: bool = False,
+        force: bool = False,
+        contract_version: str = DEFAULT_CONTRACT_VERSION,
+        output_base_dir: Path | str | None = None,
     ) -> RunbookGenerationResult:
-        """Generate, validate, and persist a Production Support Runbook using the selected engine."""
+        """Generate, validate, and persist a Production Support Runbook using deterministic generationKey caching."""
         start_time = datetime.now(timezone.utc)
 
         # 1. Inspect repository
@@ -95,23 +118,131 @@ class RunbookGenerator:
             commit_override=commit_sha_override,
             branch_override=branch_override,
         )
-        LOGGER.info(
-            "Inspected repository for runbook generation: %s (%s), repo=%s",
-            repo_info.service_name,
-            repo_info.commit_sha[:12],
-            repo_info.repo_name,
+
+        # 2. Calculate deterministic fingerprints & generationKey
+        source_fingerprint = calculate_source_fingerprint(repo_path)
+        prompt_fingerprint = calculate_prompt_fingerprint(
+            discovery_prompt_path=self.discovery_prompt_path,
+            runbook_prompt_path=self.prompt_path,
+        )
+        context_fingerprint = calculate_context_fingerprint(contract_version=contract_version)
+        gen_key_short, gen_key_full = calculate_generation_key(
+            service_id=repo_info.service_name,
+            source_fingerprint=source_fingerprint,
+            prompt_fingerprint=prompt_fingerprint,
+            contract_version=contract_version,
+            platform_context_fingerprint=context_fingerprint,
         )
 
-        # 2. Setup output directory: output/<service>/<commit_short>/
-        commit_short = repo_info.commit_sha[:16]
-        output_dir = Path("output") / repo_info.service_name / commit_short
+        LOGGER.info(
+            "Generation identity: service=%s repo=%s genKey=%s sourceFp=%s promptFp=%s",
+            repo_info.service_name,
+            repo_info.repo_name,
+            gen_key_short,
+            source_fingerprint[:12],
+            prompt_fingerprint[:12],
+        )
+
+        # 3. Setup generation directory: output/<service>/<generationKey>/
+        output_base = Path(output_base_dir) if output_base_dir else Path("output")
+        output_dir = output_base / repo_info.service_name / gen_key_short
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        findings_filename = f"REPOSITORY_FINDINGS-{output_suffix}.md" if output_suffix else "REPOSITORY_FINDINGS.md"
+        runbook_filename = f"RUNBOOK-{output_suffix}.md" if output_suffix else "RUNBOOK.md"
+        findings_path = output_dir / findings_filename
+        runbook_path = output_dir / runbook_filename
+        confluence_body_path = output_dir / "confluence-body.html"
+        runbook_html_path = output_dir / "RUNBOOK.html"
         facts_path = output_dir / "service-facts.json"
 
-        # 3. Collect or load deterministic service facts
+        # 4. Check for existing COMPLETE generation (Cache-Hit Reuse)
+        existing_meta = load_generation_metadata(output_dir)
+        if (
+            not force
+            and existing_meta is not None
+            and existing_meta.status == "COMPLETE"
+            and findings_path.exists()
+            and findings_path.stat().st_size > 0
+            and runbook_path.exists()
+            and runbook_path.stat().st_size > 0
+            and confluence_body_path.exists()
+            and confluence_body_path.stat().st_size > 0
+        ):
+            LOGGER.info("Cache hit: reusing existing COMPLETE generation for %s (%s)", repo_info.service_name, gen_key_short)
+            runbook_content = runbook_path.read_text(encoding="utf-8")
+            evidence_path = output_dir / "evidence.json"
+
+            return RunbookGenerationResult(
+                service_name=repo_info.service_name,
+                commit_sha=repo_info.commit_sha,
+                environment=environment,
+                runbook_path=str(runbook_path),
+                evidence_path=str(evidence_path) if evidence_path.exists() else None,
+                validation_status="PASSED",
+                validation_errors=[],
+                tool_calls=0,
+                duration_seconds=0.0,
+                runbook_content=runbook_content,
+                engine=existing_meta.engine or "cached",
+                findings_path=str(findings_path),
+                discovery_status="COMPLETE",
+                runbook_status="COMPLETE",
+                repo_name=repo_info.repo_name,
+                generation_key=gen_key_short,
+                generation_key_full=gen_key_full,
+                source_fingerprint=source_fingerprint,
+                prompt_fingerprint=prompt_fingerprint,
+                attempt_id=existing_meta.latest_attempt_id,
+                cache_hit=True,
+                confluence_body_path=str(confluence_body_path),
+                runbook_html_path=str(runbook_html_path) if runbook_html_path.exists() else None,
+            )
+
+        # 5. Initialize new attempt under generationKey
+        attempt_id = create_attempt_id()
+        timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        # Resolve active engine
+        active_engine: GenerationEngine
+        engine_name: str
+        if engine is not None:
+            if isinstance(engine, str):
+                active_engine = create_generation_engine(name=engine)
+                engine_name = engine
+            else:
+                active_engine = engine
+                engine_name = getattr(engine, "engine_name", "custom")
+        elif self.engine is not None:
+            active_engine = self.engine
+            engine_name = getattr(self.engine, "engine_name", "api")
+        else:
+            active_engine = create_generation_engine(name="api")
+            engine_name = "api"
+
+        # Record IN_PROGRESS generation metadata
+        gen_meta = GenerationMetadata(
+            service_id=repo_info.service_name,
+            generation_key=gen_key_short,
+            generation_key_full=gen_key_full,
+            source_fingerprint=source_fingerprint,
+            commit_sha=repo_info.commit_sha,
+            branch=repo_info.branch,
+            working_tree_clean=repo_info.working_tree_clean,
+            prompt_fingerprint=prompt_fingerprint,
+            contract_version=contract_version,
+            platform_context_fingerprint=context_fingerprint,
+            status="IN_PROGRESS",
+            created_at=timestamp_str,
+            latest_attempt_id=attempt_id,
+            engine=engine_name,
+        )
+        save_generation_metadata(output_dir, gen_meta)
+
+        # 6. Collect or load deterministic service facts
         facts: ServiceFacts | None = None
         try:
+            from collector.service_collector import collect_service_facts, save_service_facts
             facts = collect_service_facts(
                 repo_path=repo_path,
                 service_name=repo_info.service_name,
@@ -122,7 +253,7 @@ class RunbookGenerator:
         except Exception as exc:
             LOGGER.warning("Service fact collection fallback during generation: %s", exc)
 
-        # 4. Load authoritative prompts
+        # 7. Load authoritative prompts
         if not self.prompt_path.exists():
             raise FileNotFoundError(f"Runbook prompt template not found at {self.prompt_path}")
         if not self.discovery_prompt_path.exists():
@@ -130,9 +261,7 @@ class RunbookGenerator:
 
         prompt_template = self.prompt_path.read_text(encoding="utf-8")
         discovery_template = self.discovery_prompt_path.read_text(encoding="utf-8")
-        timestamp_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
-        # Fill header placeholders
         rendered_prompt = (
             prompt_template
             .replace("{SERVICE_NAME}", repo_info.service_name)
@@ -153,21 +282,6 @@ class RunbookGenerator:
             .replace("{BRANCH}", repo_info.branch or "main")
         )
 
-        # 5. Resolve active engine
-        active_engine: GenerationEngine
-        if engine is not None:
-            if isinstance(engine, str):
-                active_engine = create_generation_engine(name=engine)
-            else:
-                active_engine = engine
-        elif self.engine is not None:
-            active_engine = self.engine
-        else:
-            active_engine = create_generation_engine(name="api")
-
-        findings_filename = f"REPOSITORY_FINDINGS-{output_suffix}.md" if output_suffix else "REPOSITORY_FINDINGS.md"
-        runbook_filename = f"RUNBOOK-{output_suffix}.md" if output_suffix else "RUNBOOK.md"
-
         context = GenerationContext(
             repo_path=repo_path,
             service_name=repo_info.service_name,
@@ -185,17 +299,21 @@ class RunbookGenerator:
             output_suffix=output_suffix,
         )
 
-        # 6. Execute generation engine (Pass 1 Discovery + Pass 2 Runbook Writing)
+        # 8. Execute generation engine (Pass 1 Discovery + Pass 2 Runbook Writing)
         engine_res: EngineGenerationResult = active_engine.generate(context)
-
         elapsed_seconds = (datetime.now(timezone.utc) - start_time).total_seconds()
         summary_path = output_dir / "generation-summary.json"
 
-        # 7. Handle Engine PREPARED states (DISCOVERY_PREPARED, RUNBOOK_PREPARED)
+        # 9. Handle Engine PREPARED states (DISCOVERY_PREPARED, RUNBOOK_PREPARED)
         if engine_res.status in ("DISCOVERY_PREPARED", "RUNBOOK_PREPARED", "PREPARED"):
+            gen_meta.status = engine_res.status
+            save_generation_metadata(output_dir, gen_meta)
+            record_attempt(output_dir, attempt_id, status=engine_res.status, engine=engine_res.engine)
+
             summary_data = {
                 "repository": repo_info.repo_name,
                 "service": repo_info.service_name,
+                "generationKey": gen_key_short,
                 "commit": repo_info.commit_sha,
                 "environment": environment,
                 "version": version or "latest",
@@ -227,14 +345,25 @@ class RunbookGenerator:
                 discovery_status=engine_res.discovery_status,
                 runbook_status=engine_res.runbook_status,
                 repo_name=repo_info.repo_name,
+                generation_key=gen_key_short,
+                generation_key_full=gen_key_full,
+                source_fingerprint=source_fingerprint,
+                prompt_fingerprint=prompt_fingerprint,
+                attempt_id=attempt_id,
             )
 
-        # 8. Handle Engine FAILED state
+        # 10. Handle Engine FAILED state
         if engine_res.status != "SUCCESS" or not engine_res.runbook_path:
             err_msg = engine_res.error or "Generation engine failed to produce RUNBOOK.md"
+            gen_meta.status = "FAILED"
+            gen_meta.error = err_msg
+            save_generation_metadata(output_dir, gen_meta)
+            record_attempt(output_dir, attempt_id, status="FAILED", engine=engine_res.engine, error=err_msg)
+
             summary_data = {
                 "repository": repo_info.repo_name,
                 "service": repo_info.service_name,
+                "generationKey": gen_key_short,
                 "commit": repo_info.commit_sha,
                 "environment": environment,
                 "version": version or "latest",
@@ -267,20 +396,66 @@ class RunbookGenerator:
                 discovery_status=engine_res.discovery_status,
                 runbook_status="FAILED",
                 repo_name=repo_info.repo_name,
+                generation_key=gen_key_short,
+                generation_key_full=gen_key_full,
+                source_fingerprint=source_fingerprint,
+                prompt_fingerprint=prompt_fingerprint,
+                attempt_id=attempt_id,
             )
 
-        # 9. Validate generated RUNBOOK.md
-        runbook_path = Path(engine_res.runbook_path)
+        # 11. Validate generated RUNBOOK.md
+        runbook_file = Path(engine_res.runbook_path)
         val_res: ValidationResult = validate_runbook(
-            runbook_path=runbook_path,
+            runbook_path=runbook_file,
             run_dir=output_dir,
             repo_info=repo_info,
         )
 
-        # 10. Write generation summary
+        if val_res.passed:
+            # Deterministic HTML rendering (confluence-body.html + RUNBOOK.html)
+            try:
+                generate_runbook_html(
+                    runbook_path=runbook_file,
+                    output_dir=output_dir,
+                    repo_name=repo_info.repo_name,
+                    service_name=repo_info.service_name,
+                )
+            except Exception as render_exc:
+                LOGGER.error("Failed to render HTML from RUNBOOK.md: %s", render_exc)
+
+            # Ensure all mandatory artifacts exist before marking COMPLETE
+            mandatory_ok = (
+                findings_path.exists()
+                and findings_path.stat().st_size > 0
+                and runbook_file.exists()
+                and runbook_file.stat().st_size > 0
+                and confluence_body_path.exists()
+                and confluence_body_path.stat().st_size > 0
+            )
+
+            if mandatory_ok:
+                gen_meta.status = "COMPLETE"
+                gen_meta.completed_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                gen_meta.error = None
+                save_generation_metadata(output_dir, gen_meta)
+                record_attempt(output_dir, attempt_id, status="SUCCESS", engine=engine_res.engine)
+            else:
+                gen_meta.status = "FAILED"
+                gen_meta.error = "Mandatory artifacts missing after generation"
+                save_generation_metadata(output_dir, gen_meta)
+                record_attempt(output_dir, attempt_id, status="FAILED", engine=engine_res.engine, error=gen_meta.error)
+        else:
+            gen_meta.status = "FAILED"
+            gen_meta.error = f"Validation failed: {', '.join(val_res.reasons)}"
+            save_generation_metadata(output_dir, gen_meta)
+            record_attempt(output_dir, attempt_id, status="FAILED", engine=engine_res.engine, error=gen_meta.error)
+
+        # 12. Write generation summary
         summary_data = {
             "repository": repo_info.repo_name,
             "service": repo_info.service_name,
+            "generationKey": gen_key_short,
+            "generationKeyFull": gen_key_full,
             "commit": repo_info.commit_sha,
             "environment": environment,
             "version": version or "latest",
@@ -289,13 +464,16 @@ class RunbookGenerator:
             "discoveryStatus": "COMPLETE",
             "findingsPath": engine_res.findings_path,
             "runbookStatus": "COMPLETE",
-            "runbookPath": str(runbook_path),
+            "runbookPath": str(runbook_file),
+            "confluenceBodyPath": str(confluence_body_path) if confluence_body_path.exists() else None,
+            "runbookHtmlPath": str(runbook_html_path) if runbook_html_path.exists() else None,
             "toolCalls": engine_res.tool_calls,
             "validationPassed": val_res.passed,
             "validationErrors": val_res.reasons,
             "validationStatus": "PASSED" if val_res.passed else "FAILED",
             "durationSeconds": elapsed_seconds,
             "generatedAt": timestamp_str,
+            "attemptId": attempt_id,
         }
         summary_path.write_text(json.dumps(summary_data, indent=2), encoding="utf-8")
 
@@ -303,7 +481,7 @@ class RunbookGenerator:
             service_name=repo_info.service_name,
             commit_sha=repo_info.commit_sha,
             environment=environment,
-            runbook_path=str(runbook_path),
+            runbook_path=str(runbook_file),
             evidence_path=engine_res.evidence_path,
             validation_status="PASSED" if val_res.passed else "FAILED",
             validation_errors=val_res.reasons,
@@ -315,4 +493,11 @@ class RunbookGenerator:
             discovery_status="COMPLETE",
             runbook_status="COMPLETE",
             repo_name=repo_info.repo_name,
+            generation_key=gen_key_short,
+            generation_key_full=gen_key_full,
+            source_fingerprint=source_fingerprint,
+            prompt_fingerprint=prompt_fingerprint,
+            attempt_id=attempt_id,
+            confluence_body_path=str(confluence_body_path) if confluence_body_path.exists() else None,
+            runbook_html_path=str(runbook_html_path) if runbook_html_path.exists() else None,
         )

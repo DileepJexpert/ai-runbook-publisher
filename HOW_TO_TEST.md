@@ -182,6 +182,15 @@ STOP (Confluence: NOT PUBLISHED in dry-run)
 Upon successful completion, the CLI reports:
 
 ```text
+Service: <service-name>
+Repository: /path/to/service
+Branch: main
+Commit: <commit-sha>
+Working Tree Clean: True
+Source Fingerprint: <source-sha256>
+Prompt Fingerprint: <prompt-sha256>
+Generation Key: <generation-key>
+
 Production Support Runbook Generation
 -------------------------------------
 
@@ -195,16 +204,16 @@ Tool calls: <count>
 
 Discovery:
 COMPLETE
-Findings: output/<service>/<commit-short>/REPOSITORY_FINDINGS.md
+Findings: output/<service>/<generationKey>/REPOSITORY_FINDINGS.md
 
 Runbook:
-output/<service>/<commit-short>/RUNBOOK.md
+output/<service>/<generationKey>/RUNBOOK.md
 
 Validation: PASSED
 
 HTML:
 GENERATED
-output/<service>/<commit-short>/RUNBOOK.html
+output/<service>/<generationKey>/RUNBOOK.html
 
 Evidence:
 None
@@ -219,13 +228,13 @@ NOT PUBLISHED (dry-run)
 
 ### List generated artifacts:
 ```bash
-find output -name "REPOSITORY_FINDINGS.md" -o -name "RUNBOOK.md" -o -name "RUNBOOK.html"
+find output -name "REPOSITORY_FINDINGS.md" -o -name "RUNBOOK.md" -o -name "confluence-body.html" -o -name "RUNBOOK.html"
 ```
 
 ### Open the rendered HTML runbook locally:
 ```bash
 # macOS
-open output/<service>/<commit-short>/RUNBOOK.html
+open output/<service>/<generationKey>/RUNBOOK.html
 
 # Or automatically find and open the latest:
 open "$(find output -name RUNBOOK.html | head -1)"

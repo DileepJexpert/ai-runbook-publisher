@@ -160,10 +160,9 @@ def test_04_whole_repository_not_embedded_into_discovery_task(tmp_path, monkeypa
 
     engine = ExternalAgentEngine()
     generator = RunbookGenerator(engine=engine)
-    generator.generate(str(repo))
+    res = generator.generate(str(repo))
 
-    commit_short = info.commit_sha[:16]
-    task_file = tmp_path / "output" / "payment-service" / commit_short / "DISCOVERY_TASK.md"
+    task_file = tmp_path / "output" / "payment-service" / res.generation_key / "DISCOVERY_TASK.md"
     assert task_file.is_file()
     task_text = task_file.read_text(encoding="utf-8")
 
@@ -303,13 +302,11 @@ def test_16_and_17_idfc_coder_discovery_and_fresh_runbook_task(tmp_path, monkeyp
     info = inspect_repository(str(repo))
     monkeypatch.chdir(tmp_path)
 
-    commit_short = info.commit_sha[:16]
-    out_dir = tmp_path / "output" / "payment-service" / commit_short
-
     engine = IdfcCoderEngine(coder_cmd="python -c \"pass\"", mode="stdin")
     generator = RunbookGenerator(engine=engine)
-    generator.generate(str(repo))
+    res = generator.generate(str(repo))
 
+    out_dir = tmp_path / "output" / "payment-service" / res.generation_key
     discovery_task = out_dir / "idfc-coder-discovery-task.md"
     assert discovery_task.is_file()
     assert "Repository Discovery Task" in discovery_task.read_text(encoding="utf-8")
@@ -327,9 +324,6 @@ def test_18_to_22_external_agent_three_run_state_machine(tmp_path, monkeypatch):
     info = inspect_repository(str(repo))
     monkeypatch.chdir(tmp_path)
 
-    commit_short = info.commit_sha[:16]
-    out_dir = tmp_path / "output" / "payment-service" / commit_short
-
     engine = ExternalAgentEngine()
     generator = RunbookGenerator(engine=engine)
 
@@ -338,6 +332,8 @@ def test_18_to_22_external_agent_three_run_state_machine(tmp_path, monkeypatch):
     assert res1.validation_status == "DISCOVERY_PREPARED"
     assert res1.discovery_status == "PREPARED"
     assert res1.runbook_status == "WAITING_FOR_DISCOVERY"
+
+    out_dir = tmp_path / "output" / "payment-service" / res1.generation_key
     assert (out_dir / "DISCOVERY_TASK.md").is_file()
     assert not (out_dir / "RUNBOOK_TASK.md").exists()
     assert not (out_dir / "REPOSITORY_FINDINGS.md").exists()
