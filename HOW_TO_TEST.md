@@ -1,6 +1,6 @@
 # Master Testing Guide for ai-runbook-publisher
 
-This document is the concrete, step-by-step test execution guide for running `ai-runbook-publisher` on your enterprise environment (e.g. macOS with IDFC Coder).
+This document is the concrete, step-by-step test execution and troubleshooting guide for running `ai-runbook-publisher` on your enterprise environment (e.g. macOS with IDFC Coder).
 
 ---
 
@@ -96,7 +96,7 @@ python run.py \
 
 ---
 
-## 4. Run Two-Pass Generation with IDFC Coder (Non-Interactive)
+## 4. Run Two-Pass Generation with IDFC Coder
 
 To run the complete two-pass pipeline automatically without babysitting or manual copy-pasting, test the non-interactive modes:
 
@@ -192,3 +192,69 @@ cat output/beneficiary-validation-service/*/validation-report.txt
 # Open the rendered HTML runbook in your default browser (macOS)
 open "$(find output/beneficiary-validation-service -name RUNBOOK.html | head -1)"
 ```
+
+---
+
+## 7. Troubleshooting & Diagnostic Guide
+
+### Problem 1: Script pauses or waits between Pass 1 and Pass 2
+- **Cause**: `--mode interactive` launches an interactive terminal session where IDFC Coder waits for human keystrokes (`Cmd+V`, `Enter`, or tool approvals).
+- **Remediation**: Use non-interactive mode:
+  ```bash
+  python run.py \
+    --repo /Users/dileep.maurya/Documents/API-Integration-workspace/beneficiary-validation-service \
+    --engine idfc-coder \
+    --mode arg \
+    --dry-run \
+    --force
+  ```
+
+### Problem 2: `RUNBOOK.html` or `confluence-body.html` is not found
+- **Cause**: HTML rendering is only triggered **after `RUNBOOK.md` exists and passes deterministic safety validation**. If Pass 1 or Pass 2 fails, or if validation fails, HTML is intentionally omitted to avoid unvalidated output.
+- **Remediation**: Check which step completed:
+  ```bash
+  find output/beneficiary-validation-service -type f
+  ```
+  - If only `service-facts.json` exists $\rightarrow$ Pass 1 did not complete.
+  - If `REPOSITORY_FINDINGS.md` exists but `RUNBOOK.md` does not $\rightarrow$ Pass 2 did not complete.
+  - If `RUNBOOK.md` exists but `validation-report.txt` contains `FAILED` $\rightarrow$ Check validation errors in `validation-report.txt`.
+
+### Problem 3: CLI prints `CACHE HIT: Reusing existing runbook`
+- **Cause**: A previous generation for this exact commit and prompt already succeeded (`COMPLETE`).
+- **Remediation**: Pass `--force` to bypass the cache and run a fresh generation:
+  ```bash
+  python run.py --repo ... --engine idfc-coder --mode arg --dry-run --force
+  ```
+
+### Problem 4: `Executable not found: 'idfc-coder'`
+- **Cause**: `idfc-coder` is not in your current `$PATH`.
+- **Remediation**:
+  1. Find the binary location:
+     ```bash
+     which idfc-coder
+     ```
+  2. Pass the explicit path via CLI or environment variable:
+     ```bash
+     python run.py --coder /full/path/to/idfc-coder ...
+     # OR
+     export IDFC_CODER_CMD=/full/path/to/idfc-coder
+     ```
+
+### Problem 5: `Validation: FAILED` in CLI output
+- **Cause**: The generated `RUNBOOK.md` failed safety validation rules (e.g., missing required sections, unpopulated `[TODO]` placeholders, raw Java code blocks, or affirmative dangerous recommendations like `Replay Kafka messages`).
+- **Remediation**: Read the validation failure reasons:
+  ```bash
+  cat output/beneficiary-validation-service/*/validation-report.txt
+  ```
+
+### Problem 6: `DirtyWorkingTreeError: PIPELINE mode requires a clean working tree`
+- **Cause**: Uncommitted changes in target repo when running in `--execution-mode pipeline`.
+- **Remediation**: In local developer testing, use `--execution-mode local` (the default). If testing pipeline mode, commit your changes in the target repo first.
+
+### Problem 7: `ModuleNotFoundError: No module named 'click'`
+- **Cause**: Virtual environment is not activated or dependencies are not installed.
+- **Remediation**:
+  ```bash
+  source .venv/bin/activate
+  pip install -r requirements.txt
+  ```
