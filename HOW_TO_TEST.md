@@ -1,20 +1,17 @@
-# How to Test ai-runbook-publisher
+# Master Testing Guide for ai-runbook-publisher
 
-This document is the master setup, execution, and verification guide for running `ai-runbook-publisher` locally or in an enterprise environment (e.g. on macOS / Linux / Windows using `idfc-coder` or other generation engines).
+This document is the concrete, step-by-step test execution guide for running `ai-runbook-publisher` on your enterprise environment (e.g. macOS with IDFC Coder).
 
 ---
 
-## 1. Publisher Setup
+## 1. Publisher Environment Setup
 
-Open your terminal in the `ai-runbook-publisher` directory and execute:
+Open the terminal in VS Code inside your `ai-runbook-publisher` folder:
 
 ```bash
 # ============================================================
-# A. PUBLISHER SETUP
+# A. PUBLISHER ENVIRONMENT SETUP
 # ============================================================
-
-# Go to the ai-runbook-publisher folder opened in VS Code / terminal
-cd /Users/dileep.maurya/YOUR_PATH/ai-runbook-publisher
 
 # Confirm location
 pwd
@@ -25,13 +22,13 @@ python3 --version
 # Check IDFC Coder availability
 which idfc-coder
 
-# Create virtual environment (only if not already created)
+# Create virtual environment (if not already created)
 python3 -m venv .venv
 
 # Activate virtual environment
 source .venv/bin/activate
 
-# Confirm Python path from active virtual environment
+# Confirm Python path
 which python
 python --version
 
@@ -41,220 +38,157 @@ python -m pip install --upgrade pip
 # Install publisher dependencies
 python -m pip install -r requirements.txt
 
-# Run all automated tests
+# Run automated tests to verify clean installation
 pytest -v
 
-# Check publisher CLI
+# Check CLI options
 python run.py --help
 ```
 
-> **Note:** If `pytest -v` passes (all unit and integration tests green), the publisher installation is verified and ready.
-
 ---
 
-## 2. Verify Target Spring Boot Repository
+## 2. Verify Target Service Repository
 
-Pick a real Spring Boot repository to test against. The target application must be an actual Git clone so the publisher can resolve commit, branch, and origin metadata.
+Verify the target service repository (`beneficiary-validation-service`):
 
 ```bash
 # ============================================================
-# B. VERIFY TARGET SPRING BOOT REPOSITORY
+# B. VERIFY TARGET SERVICE REPOSITORY
 # ============================================================
 
-export TARGET_REPO="/Users/dileep.maurya/Documents/work/my-spring-service"
+export TARGET_REPO="/Users/dileep.maurya/Documents/API-Integration-workspace/beneficiary-validation-service"
 
 cd "$TARGET_REPO"
 
-# Confirm it is a Git repository
+# Confirm git status and commit
 git status
-
-# Check current branch
 git branch --show-current
-
-# Check commit SHA
 git rev-parse HEAD
-
-# Check remote repository URL
 git remote -v
 ```
 
 ---
 
-## 3. Return to Publisher Directory
+## 3. Deterministic Pre-Tests (No AI Involved)
+
+Return to the `ai-runbook-publisher` directory and run static discovery:
 
 ```bash
 # ============================================================
-# C. RETURN TO RUNBOOK PUBLISHER
+# C. RETURN TO PUBLISHER & RUN DETERMINISTIC PRE-CHECKS
 # ============================================================
 
-cd /Users/dileep.maurya/YOUR_PATH/ai-runbook-publisher
+# Return to publisher directory
+cd - || cd /Users/dileep.maurya/ai-runbook-publisher
 
 source .venv/bin/activate
-```
 
----
-
-## 4. Deterministic Pre-Tests (No AI Involved)
-
-Before involving AI or coder models, verify repository access and deterministic fact extraction:
-
-### Step 4.1: Inspect Repository Metadata
-```bash
-# ============================================================
-# D. TEST REPOSITORY INSPECTION - NO AI
-# ============================================================
-
+# 1. Test repository inspection (No AI)
 python run.py \
-  --repo "$TARGET_REPO" \
+  --repo /Users/dileep.maurya/Documents/API-Integration-workspace/beneficiary-validation-service \
   --inspect-repo
-```
 
-### Step 4.2: Collect Service Facts
-```bash
-# ============================================================
-# E. COLLECT SERVICE FACTS - NO AI
-# ============================================================
-
+# 2. Test deterministic service fact collection (No AI)
 python run.py \
-  --repo "$TARGET_REPO" \
+  --repo /Users/dileep.maurya/Documents/API-Integration-workspace/beneficiary-validation-service \
   --collect-facts
 ```
 
-These steps verify that repository access, Git inspection, and deterministic static analysis (controllers, properties, Kafka, DB, actuator) work without external dependencies.
-
 ---
 
-## 5. Full Two-Pass Runbook Generation with IDFC-Coder
+## 4. Run Two-Pass Generation with IDFC Coder (Non-Interactive)
 
-Run the complete two-pass pipeline with `idfc-coder` in dry-run mode (Confluence publication will NOT be triggered):
+To run the complete two-pass pipeline automatically without babysitting or manual copy-pasting, test the non-interactive modes:
 
+### Recommended: Pass Task as File Argument (`--mode arg`)
 ```bash
 # ============================================================
-# F. FULL RUNBOOK TEST WITH IDFC-CODER
-# CONFLUENCE WILL NOT BE PUBLISHED
+# D1. NON-INTERACTIVE TWO-PASS GENERATION (--mode arg)
+# Runs Pass 1 -> REPOSITORY_FINDINGS.md -> Pass 2 -> RUNBOOK.md -> HTML
+# Zero manual resume, Enter, or copy-paste required
 # ============================================================
 
 python run.py \
-  --repo "$TARGET_REPO" \
-  --generate-runbook \
+  --repo /Users/dileep.maurya/Documents/API-Integration-workspace/beneficiary-validation-service \
   --engine idfc-coder \
-  --environment production \
-  --dry-run
+  --mode arg \
+  --dry-run \
+  --force
+```
+
+### Alternative: Pipe Task via STDIN (`--mode stdin`)
+If `--mode arg` is not supported by your IDFC Coder CLI binary, try standard input piping:
+```bash
+# ============================================================
+# D2. NON-INTERACTIVE TWO-PASS GENERATION (--mode stdin)
+# Pipes task content directly to IDFC Coder process
+# ============================================================
+
+python run.py \
+  --repo /Users/dileep.maurya/Documents/API-Integration-workspace/beneficiary-validation-service \
+  --engine idfc-coder \
+  --mode stdin \
+  --dry-run \
+  --force
+```
+
+### Interactive Mode (`--mode interactive`)
+Used for step-by-step interactive debugging with clipboard (`pbcopy`) banner:
+```bash
+# ============================================================
+# D3. INTERACTIVE MODE (DEBUGGING ONLY)
+# ============================================================
+
+python run.py \
+  --repo /Users/dileep.maurya/Documents/API-Integration-workspace/beneficiary-validation-service \
+  --engine idfc-coder \
+  --mode interactive \
+  --dry-run \
+  --force
 ```
 
 ---
 
-## 6. Target Architecture & Execution Pipeline
-
-The execution follows a clean two-pass decoupled architecture:
+## 5. Execution Pipeline Overview
 
 ```text
-Target Spring Boot Repo
-        ↓
-service-facts.json (deterministic facts)
-        ↓
-IDFC Coder Discovery Pass (Pass 1)
-        ↓
-REPOSITORY_FINDINGS.md
-        ↓
-FIRST IDFC CODER CONTEXT ENDS
-        ↓
-Fresh IDFC Coder Invocation (Pass 2 - Fresh Context)
-        ↓
-RUNBOOK.md
-        ↓
-Lightweight Deterministic Validator
-        ↓
-RUNBOOK.html (Standalone rendered HTML)
-        ↓
+Pass 1: Discovery Pass
+   ↓
+Reads service-facts.json + Java source code
+   ↓
+Produces REPOSITORY_FINDINGS.md
+   ↓
+FIRST SESSION ENDS (Clean Context Boundary)
+   ↓
+Pass 2: Runbook Writing Pass (Fresh Session)
+   ↓
+Reads REPOSITORY_FINDINGS.md ONLY (No Java re-scan)
+   ↓
+Produces RUNBOOK.md
+   ↓
+Lightweight Deterministic Safety Validator
+   ↓
+Generates RUNBOOK.html & confluence-body.html
+   ↓
 STOP (Confluence: NOT PUBLISHED in dry-run)
 ```
 
-### Key Safety & Isolation Principles
-1. **Fresh Context in Pass 2**: The runbook writer starts in a fresh context with `REPOSITORY_FINDINGS.md` and `service-facts.json`. It does NOT continue exploring Java source files.
-2. **Interactive/SSO Approval**: Because `idfc-coder` is interactive / SSO-based, approve any tool execution prompts in the coder session as requested.
-3. **No Confluence Writes**: In `--dry-run`, zero write requests are sent to Confluence.
-
 ---
 
-## 7. Expected CLI Output
+## 6. Inspecting Generated Artifacts
 
-Upon successful completion, the CLI reports:
-
-```text
-Service: <service-name>
-Repository: /path/to/service
-Branch: main
-Commit: <commit-sha>
-Working Tree Clean: True
-Source Fingerprint: <source-sha256>
-Prompt Fingerprint: <prompt-sha256>
-Generation Key: <generation-key>
-
-Production Support Runbook Generation
--------------------------------------
-
-Service: <service-name>
-Commit: <commit-sha>
-Environment: production
-
-Deterministic facts loaded: YES
-Generation engine: idfc-coder
-Tool calls: <count>
-
-Discovery:
-COMPLETE
-Findings: output/<service>/<generationKey>/REPOSITORY_FINDINGS.md
-
-Runbook:
-output/<service>/<generationKey>/RUNBOOK.md
-
-Validation: PASSED
-
-HTML:
-GENERATED
-output/<service>/<generationKey>/RUNBOOK.html
-
-Evidence:
-None
-
-Confluence:
-NOT PUBLISHED (dry-run)
-```
-
----
-
-## 8. Inspecting Generated Artifacts
-
-### List generated artifacts:
-```bash
-find output -name "REPOSITORY_FINDINGS.md" -o -name "RUNBOOK.md" -o -name "confluence-body.html" -o -name "RUNBOOK.html"
-```
-
-### Open the rendered HTML runbook locally:
-```bash
-# macOS
-open output/<service>/<generationKey>/RUNBOOK.html
-
-# Or automatically find and open the latest:
-open "$(find output -name RUNBOOK.html | head -1)"
-```
+After execution completes:
 
 ```bash
-# Linux
-xdg-open "$(find output -name RUNBOOK.html | head -1)"
+# List all generated files for the service
+find output/beneficiary-validation-service -type f
+
+# Check the generation summary
+cat output/beneficiary-validation-service/*/generation-summary.json
+
+# Check the deterministic validation report
+cat output/beneficiary-validation-service/*/validation-report.txt
+
+# Open the rendered HTML runbook in your default browser (macOS)
+open "$(find output/beneficiary-validation-service -name RUNBOOK.html | head -1)"
 ```
-
-```powershell
-# Windows (PowerShell)
-Start-Process (Get-ChildItem -Path output -Filter RUNBOOK.html -Recurse | Select-Object -First 1).FullName
-```
-
----
-
-## 9. Troubleshooting & Support
-
-If any step fails:
-1. Do not apply multiple random fixes.
-2. Inspect the generated error report in `output/<service>/<commit-short>/validation-report.txt` or `generation-summary.json`.
-3. Capture the exact terminal output for diagnosis.
