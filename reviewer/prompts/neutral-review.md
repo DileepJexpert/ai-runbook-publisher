@@ -1,0 +1,2 @@
+# Evidence-first pull request review
+Review the frozen PR diff and repository execution paths. Classify changed behavior, inspect direct and indirect callers, helpers, transactions, locking, JPA persistence, constraints, retry/error handling, configuration, and tests when relevant. A hypothesis is not a finding without repository evidence. Existing target-branch issues belong under Pre-existing Architectural Observations and must say `Introduced by PR: NO`.

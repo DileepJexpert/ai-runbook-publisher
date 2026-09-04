@@ -1,0 +1,1 @@
+For every candidate, actively seek counter-evidence. BLOCKER and MAJOR findings require independently verified execution-path evidence, inspected files, and a conclusion explaining why helpers, locks, constraints, idempotency, and tests do not disprove the risk.

@@ -1,0 +1,1 @@
+Return JSON with `summary` and `findings`. Every finding requires id, title, severity, evidence (`file`, optional `line`), introduced_by_pr, verification_status, execution_path, counter_evidence_checked, counter_evidence_conclusion, impact, recommendation, confidence, and failure_scenario. Do not include unsupported findings.
