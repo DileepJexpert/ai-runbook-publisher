@@ -18,7 +18,7 @@ class Snapshot:
 @dataclass
 class Finding:
     id: str; title: str; severity: str; evidence: list[dict[str, Any]] = field(default_factory=list)
-    category: str = "GENERAL"; introduced_by_pr: bool = True; verification_status: str = "UNVERIFIED"; execution_path: str = ""
+    category: str = "GENERAL"; source: str = "ai"; introduced_by_pr: bool = True; verification_status: str = "UNVERIFIED"; execution_path: str = ""
     counter_evidence_checked: list[str] = field(default_factory=list); counter_evidence_conclusion: str = ""
     impact: str = ""; recommendation: str = ""; confidence: str = "MEDIUM"; failure_scenario: str = ""
     def to_dict(self): return asdict(self)
