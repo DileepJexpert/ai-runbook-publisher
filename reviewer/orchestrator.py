@@ -9,8 +9,8 @@ from .report_renderer import render
 from .validator import validate
 class ReviewOrchestrator:
     def __init__(self, engine: ReviewEngine, rules_dir: Path | None = None): self.engine=engine; self.rules_dir=rules_dir or Path(__file__).parent.parent / "review_rules"
-    def run(self, repo: str, base: str, head: str, mode: ReviewMode, output_root: str | Path = "output/reviews") -> dict[ReviewMode, ReviewResult]:
-        snapper=GitSnapshot(repo); snapshot=snapper.freeze(head, base)
+    def run(self, repo: str, base: str, head: str, mode: ReviewMode, output_root: str | Path = "output/reviews", fetch: bool = True) -> dict[ReviewMode, ReviewResult]:
+        snapper=GitSnapshot(repo); snapshot=snapper.freeze(head, base, fetch=fetch)
         service=Path(repo).resolve().name; review_id=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         root=Path(output_root)/service/review_id
         try:
@@ -19,6 +19,9 @@ class ReviewOrchestrator:
             results={}
             for current in modes:
                 target=root/current.value if mode is ReviewMode.BOTH else root; target.mkdir(parents=True, exist_ok=True)
-                prompt=build_prompt(snapshot,current,root,self.rules_dir); result=validate(self.engine.review(prompt,current,snapshot.worktree)); render(result,snapshot,target); results[current]=result
+                before=snapper._git("-C", snapshot.worktree, "status", "--porcelain")
+                prompt=build_prompt(snapshot,current,root,self.rules_dir); changed={line.split('\t')[-1] for line in (root/'changed-files.txt').read_text(encoding='utf-8').splitlines()}; result=validate(self.engine.review(prompt,current,snapshot.worktree), snapshot.worktree, changed); after=snapper._git("-C", snapshot.worktree, "status", "--porcelain")
+                if after != before: raise RuntimeError("Reviewer engine modified the frozen worktree; refusing the review result")
+                render(result,snapshot,target); results[current]=result
             return results
         finally: snapper.cleanup()

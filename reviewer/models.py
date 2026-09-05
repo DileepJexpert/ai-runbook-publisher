@@ -7,6 +7,8 @@ class ReviewMode(str, Enum):
     BASELINE = "baseline"
     GUIDED = "guided"
     BOTH = "both"
+class ReviewOutcome(str, Enum):
+    APPROVE="APPROVE"; CHANGES_REQUIRED="CHANGES_REQUIRED"; NEEDS_DISCUSSION="NEEDS_DISCUSSION"
 
 @dataclass(frozen=True)
 class Snapshot:
@@ -16,13 +18,13 @@ class Snapshot:
 @dataclass
 class Finding:
     id: str; title: str; severity: str; evidence: list[dict[str, Any]] = field(default_factory=list)
-    introduced_by_pr: bool = True; verification_status: str = "UNVERIFIED"; execution_path: str = ""
+    category: str = "GENERAL"; introduced_by_pr: bool = True; verification_status: str = "UNVERIFIED"; execution_path: str = ""
     counter_evidence_checked: list[str] = field(default_factory=list); counter_evidence_conclusion: str = ""
     impact: str = ""; recommendation: str = ""; confidence: str = "MEDIUM"; failure_scenario: str = ""
     def to_dict(self): return asdict(self)
 
 @dataclass
 class ReviewResult:
-    mode: ReviewMode; findings: list[Finding] = field(default_factory=list); summary: str = ""
+    mode: ReviewMode; findings: list[Finding] = field(default_factory=list); summary: str = ""; outcome: ReviewOutcome = ReviewOutcome.NEEDS_DISCUSSION
     pre_existing_observations: list[Finding] = field(default_factory=list); raw_output: str = ""
-    def to_dict(self): return {"mode": self.mode.value, "summary": self.summary, "findings": [x.to_dict() for x in self.findings], "pre_existing_observations": [x.to_dict() for x in self.pre_existing_observations]}
+    def to_dict(self): return {"mode": self.mode.value, "outcome": self.outcome.value, "summary": self.summary, "findings": [x.to_dict() for x in self.findings], "pre_existing_observations": [x.to_dict() for x in self.pre_existing_observations]}
