@@ -10,7 +10,10 @@ class IdfcCoderEngine(ReviewEngine):
     def review(self, prompt, mode, worktree):
         if self.input_mode not in {"prompt", "stdin", "interactive"}: raise ValueError("coder mode must be prompt, stdin, or interactive")
         args = [self.executable] + (["-p", prompt] if self.input_mode == "prompt" else [])
-        result = subprocess.run(args, input=prompt if self.input_mode == "stdin" else None, text=True, capture_output=True, cwd=worktree, check=True, timeout=self.timeout)
+        try: result = subprocess.run(args, input=prompt if self.input_mode == "stdin" else None, text=True, capture_output=True, cwd=worktree, check=True, timeout=self.timeout)
+        except FileNotFoundError as exc: raise RuntimeError(f"Reviewer executable was not found: {self.executable}") from exc
+        except subprocess.TimeoutExpired as exc: raise RuntimeError(f"Reviewer executable timed out after {self.timeout} seconds") from exc
+        except subprocess.CalledProcessError as exc: raise RuntimeError(f"Reviewer executable exited with status {exc.returncode}: {exc.stderr[:300]}") from exc
         try: data = json.loads(result.stdout)
         except json.JSONDecodeError as exc: raise RuntimeError(f"IDFC Coder returned malformed structured review output: {exc}") from exc
         findings = [Finding(**item) for item in data.get("findings", [])]

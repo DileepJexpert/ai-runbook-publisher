@@ -22,6 +22,6 @@ class ReviewOrchestrator:
                 before=snapper._git("-C", snapshot.worktree, "status", "--porcelain")
                 prompt=build_prompt(snapshot,current,root,self.rules_dir); changed={line.split('\t')[-1] for line in (root/'changed-files.txt').read_text(encoding='utf-8').splitlines()}; result=validate(self.engine.review(prompt,current,snapshot.worktree), snapshot.worktree, changed); after=snapper._git("-C", snapshot.worktree, "status", "--porcelain")
                 if after != before: raise RuntimeError("Reviewer engine modified the frozen worktree; refusing the review result")
-                render(result,snapshot,target); results[current]=result
+                render(result,snapshot,target,(root/'changed-files.txt').read_text(encoding='utf-8').splitlines()); results[current]=result
             return results
         finally: snapper.cleanup()
